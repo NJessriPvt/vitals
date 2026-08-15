@@ -1,10 +1,19 @@
 # CLAUDE.md — vitals
 
-Personal health dashboard: syncs the **Google Health API** into local SQLite and
-charts it. Zero dependencies (Node built-ins + vanilla JS, no build step, no
-`node_modules`). Read `README.md` for setup and the API's access situation.
+Personal health dashboard: syncs the **Google Health API** into the fleet's MySQL
+and charts it. One dependency (`mysql2`); no framework, no build step. Deployed by
+infra at **2 replicas** (`infra/apps/vitals.yml`). Read `README.md` for setup and the
+API's access situation.
 
-`npm run demo` · `npm start` · `npm test` · `npm run check:paths`
+`npm start` · `npm test` · `npm run check:paths`
+
+**Local dev needs a tunnel to the fleet DB** — MySQL's published port is filtered
+from outside njvhost:
+
+    ssh -f -N -L 3307:192.168.50.244:3306 njvhost
+
+A locally-run server competes for the sync lease with production (same database), so
+stop it when you are done or it will occasionally sync from your laptop.
 
 ## The five things that will bite you
 
@@ -73,6 +82,14 @@ Int64 values arrive as JSON **strings** (`"count": "15"`).
 
 ## Invariants — don't quietly break these
 
+- **Point anchors must not depend on the host timezone.** `new Date(y, m, d)` is
+  process-local; a UTC container and a UTC+4 laptop wrote two rows for the same
+  rollup day and daily calories double-counted. Anchors are `Date.UTC`; the viewer's
+  offset is applied at QUERY time, which is the only place a timezone belongs.
+- **Periodic work is leased, and the lease is conditional on completion time.** A
+  plain mutex makes replicas take turns rather than stand down — both still run the
+  sweep, which is the exact failure it was meant to prevent. Manual sync deliberately
+  passes `minInterval 0` to override the cadence.
 - **`points.raw` is never dropped.** Derived values are re-computable from it
   (`normalize.renormalize`). Per-type value field names aren't fully published, so
   hints will need correcting; that must never require a re-sync.
@@ -120,3 +137,20 @@ Hand-rolled SVG against the house data-viz method. The palette in `style.css` is
 chunking, restatement, timezone bucketing, sleep anchoring, gap handling, and the
 webhook's auth ordering. Rendering is checked by looking at the page — run
 `npm run demo` and open it.
+
+## The assistant reads this app
+
+`GET /api/assistant` is a one-call digest — today, yesterday, 14 days, 7/30-day
+averages — aggregated here rather than in the model, because a language model doing
+arithmetic over five responses is where invented numbers come from. It also reports
+its own `freshness`, `coverage` and `notes`.
+
+Two rules when changing it:
+
+- **Never let the notes contradict the values.** They were listing resting HR/HRV/SpO2
+  as "no data" while the same payload carried values filled in from raw samples. The
+  assistant reads notes aloud, so a contradiction becomes a confident falsehood.
+- **A null means not measured.** Do not substitute zero anywhere in this payload.
+
+`POST /api/sync` forces a refresh ahead of the 5-minute cadence; the assistant is told
+to call it before answering "right now" questions.
