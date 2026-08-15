@@ -2,11 +2,10 @@
 /**
  * vitals — your own health dashboard on top of the Google Health API.
  *
- * Zero dependencies: Node stdlib and vanilla JS, no build step, no node_modules.
- * Same bargain the rest of this fleet's small services make.
+ * One dependency (mysql2) and vanilla JS: no framework, no build step, no bundler.
  *
  * SHAPE. Google is reached from exactly two modules — lib/oauth.js (tokens) and
- * lib/health.js (data) — and everything else works off the local SQLite store. That
+ * lib/health.js (data) — and everything else works off the shared database. That
  * split is deliberate: the dashboard must stay fast and answerable when Google is
  * slow, rate-limiting, or the refresh token has expired. Charts never wait on an
  * upstream call.

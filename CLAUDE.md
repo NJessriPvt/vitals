@@ -97,7 +97,7 @@ Int64 values arrive as JSON **strings** (`"count": "15"`).
   **wake** time (`bucketBy: 'end'`) — bucketing a night by bedtime puts a 23:40 and a
   00:20 start on different days and produces 15-hour double-nights.
 - **Google is reached from exactly two modules**: `lib/oauth.js` (tokens) and
-  `lib/health.js` (data). The dashboard reads only SQLite and never waits on upstream.
+  `lib/health.js` (data). The dashboard reads only the database and never waits on upstream.
 - **The webhook checks auth BEFORE answering the handshake.** Registration probes the
   endpoint *without* credentials and requires a 401/403; an endpoint that 200s
   everything fails with `FAILED_PRECONDITION`. This inverts the usual "handle health
