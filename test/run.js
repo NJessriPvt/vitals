@@ -168,15 +168,27 @@ test('sample point: sampleTime.physicalTime is the instant', () => {
   assert.strictEqual(row.startMs, row.endMs);
 });
 
-test('daily point: a bare date anchors to local midnight', () => {
+test('a civil date anchors identically on any host timezone', () => {
+  // Regression: anchors were computed with `new Date(y, m, d)`, which is
+  // process-local. The same rollup day read by a UTC container and a UTC+4 laptop
+  // produced two anchors, two point ids, and a daily total that double-counted.
+  // The anchor is UTC; local-day placement happens at query time via the offset.
   const notes = new Set();
   const row = normalize.normalizePoint({
     name: 'p/2',
     dailyRestingHeartRate: { date: '2026-05-14', beatsPerMinute: 54 },
   }, catalog.get('daily-resting-heart-rate'), notes);
   assert.strictEqual(row.value, 54);
-  assert.strictEqual(new Date(row.startMs).getDate(), 14, 'must land on the 14th locally');
-  assert.strictEqual(new Date(row.startMs).getHours(), 0);
+  assert.strictEqual(row.startMs, Date.UTC(2026, 4, 14), 'anchor must be UTC midnight');
+
+  const rollup = normalize.normalizeRollupPoint({
+    civilStartTime: { date: { year: 2026, month: 5, day: 14 } },
+    civilEndTime: { date: { year: 2026, month: 5, day: 15 } },
+    totalCalories: { kcalSum: 2736 },
+  }, catalog.get('total-calories'), notes);
+  assert.strictEqual(rollup.anchorMs, Date.UTC(2026, 4, 14));
+  assert.strictEqual(rollup.pointId, `total-calories:rollup:${Date.UTC(2026, 4, 14)}`,
+    'the id must not vary with the host timezone');
 });
 
 test('sleep: value is time ASLEEP, stages become parts, awake is excluded', () => {

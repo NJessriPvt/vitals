@@ -50,7 +50,9 @@ const health = require('./lib/health');
 const sync = require('./lib/sync');
 const webhook = require('./lib/webhook');
 const demo = require('./lib/demo');
-const { BUCKETS, seriesPayload, summaryPayload, tablePayload } = require('./lib/query');
+const {
+  BUCKETS, seriesPayload, summaryPayload, tablePayload, assistantDigest,
+} = require('./lib/query');
 
 const PORT = Number(process.env.PORT || 4330);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -295,6 +297,22 @@ async function route(req, res, url) {
   if (pathname === '/api/table') {
     const { from, to } = rangeOf(q);
     return json(res, 200, await tablePayload(q.get('type'), from, to, Number(q.get('limit') || 500)));
+  }
+
+  /**
+   * One-call digest for the personal assistant.
+   *
+   * Deliberately NOT a thin proxy over the other endpoints: aggregation happens here,
+   * next to the data and its units, because the alternative is a language model doing
+   * arithmetic over five responses — which is where invented numbers come from. The
+   * payload also states its own freshness and coverage, so the assistant can say
+   * "I only have data from the 14th" rather than reporting an absence as a zero.
+   */
+  if (pathname === '/api/assistant') {
+    const tz = q.get('tz');
+    const offsetMs = tz !== null && tz !== '' && Number.isFinite(Number(tz))
+      ? Number(tz) : undefined;
+    return json(res, 200, await assistantDigest(Date.now(), offsetMs));
   }
 
   if (pathname === '/api/stream') return sseHandler(req, res);
