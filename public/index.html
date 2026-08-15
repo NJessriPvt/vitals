@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vitals</title>
+<!-- Relative, never root-absolute: this app is served at / locally and under a
+     stripped path prefix in the fleet. scripts/check-paths.js enforces it. -->
+<link rel="stylesheet" href="./style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>❤️</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="pulse" aria-hidden="true"></span>
+    <h1>vitals</h1>
+  </div>
+  <div class="topbar-right">
+    <span id="sync-state" class="sync-state" title="Sync status">—</span>
+    <button id="btn-sync" class="btn" type="button">Sync now</button>
+    <button id="btn-theme" class="btn btn-icon" type="button" aria-label="Toggle theme">◐</button>
+  </div>
+</header>
+
+<!-- Shown until Google is connected. Not a modal: the dashboard behind it works
+     with demo data, so the app is usable while credentials are being sorted out. -->
+<section id="setup" class="setup" hidden>
+  <div class="setup-head">
+    <h2 id="setup-title">Connect Google Health</h2>
+    <button id="setup-toggle" class="btn btn-quiet" type="button">Hide</button>
+  </div>
+  <div id="setup-body" class="setup-body"></div>
+</section>
+
+<!-- One filter row, above everything it scopes. Every chart, tile and table below
+     re-renders against this same slice, so the numbers always agree. -->
+<div class="filters" role="group" aria-label="Filters">
+  <div class="filter">
+    <label for="f-range">Range</label>
+    <select id="f-range">
+      <option value="7">Last 7 days</option>
+      <option value="30" selected>Last 30 days</option>
+      <option value="90">Last 90 days</option>
+      <option value="180">Last 6 months</option>
+      <option value="365">Last year</option>
+      <option value="custom">Custom…</option>
+    </select>
+  </div>
+  <div class="filter" id="custom-range" hidden>
+    <label for="f-from">From</label>
+    <input type="date" id="f-from">
+    <label for="f-to">To</label>
+    <input type="date" id="f-to">
+  </div>
+  <div class="filter">
+    <label for="f-bucket">Resolution</label>
+    <select id="f-bucket">
+      <option value="auto" selected>Auto</option>
+      <option value="5min">5 minutes</option>
+      <option value="hour">Hourly</option>
+      <option value="day">Daily</option>
+      <option value="week">Weekly</option>
+    </select>
+  </div>
+  <div class="filter">
+    <label for="f-group">Show</label>
+    <select id="f-group">
+      <option value="all" selected>All metrics</option>
+    </select>
+  </div>
+  <div class="filter filter-grow">
+    <label for="f-search">Filter metrics</label>
+    <input type="search" id="f-search" placeholder="steps, sleep, heart…" autocomplete="off">
+  </div>
+  <div class="filter-status" id="range-label"></div>
+</div>
+
+<main>
+  <section id="tiles" class="tiles" aria-label="Headline metrics"></section>
+
+  <section class="card compare-card">
+    <div class="card-head">
+      <div>
+        <h2>Compare</h2>
+        <p class="card-sub">Each metric indexed to its own average over the range (100 = typical).
+          One axis, so the shapes are comparable and no scale alignment is invented.</p>
+      </div>
+      <div class="card-actions">
+        <div id="compare-picker" class="chips" role="group" aria-label="Metrics to compare"></div>
+      </div>
+    </div>
+    <div class="legend" id="compare-legend"></div>
+    <div class="chart" id="compare-chart"></div>
+  </section>
+
+  <section id="charts" class="grid" aria-label="Metric charts"></section>
+
+  <section class="card log-card">
+    <div class="card-head">
+      <h2>Sync activity</h2>
+      <span class="card-sub" id="log-sub"></span>
+    </div>
+    <ul id="log" class="log"></ul>
+  </section>
+</main>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

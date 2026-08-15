@@ -1,0 +1,352 @@
+/*
+ * vitals — chrome and palette.
+ *
+ * The colour tokens below are the validated house data-viz palette, not free
+ * choices. Both modes are SELECTED — the dark column is the same hues re-stepped
+ * for the dark surface, never an automatic flip of the light one.
+ *
+ *   categorical   8 slots, fixed order. Assigned by entity, never by rank, so
+ *                 filtering a series out never repaints the survivors.
+ *   ordinal       one hue, light -> dark. For ORDERED categories only: sleep
+ *                 stages and heart-rate zones. `--ord-1` is always the step
+ *                 nearest the surface ("least") and `--ord-4` the far one ("most"),
+ *                 which is why the dark column runs the opposite direction in hex.
+ *
+ * Validated with the palette validator in both modes. Three light-mode categorical
+ * slots sit below 3:1 on the light surface; the relief rule applies and is met —
+ * every chart in this app ships a table view.
+ */
+
+:root {
+  color-scheme: light;
+
+  --surface-1: #fcfcfb;
+  --surface-page: #f9f9f7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --deemph: #c3c2b7;
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+
+  --ord-1: #86b6ef;
+  --ord-2: #5598e7;
+  --ord-3: #2a78d6;
+  --ord-4: #184f95;
+
+  --good: #0ca30c;
+  --warning: #fab219;
+  --critical: #d03b3b;
+  --delta-good: #006300;
+  --delta-bad: #d03b3b;
+
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(11, 11, 11, 0.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --surface-page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --deemph: #383835;
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+
+    --ord-1: #184f95;
+    --ord-2: #256abf;
+    --ord-3: #3987e5;
+    --ord-4: #86b6ef;
+
+    --delta-good: #0ca30c;
+    --shadow: none;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --surface-page: #0d0d0d;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.10);
+  --deemph: #383835;
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+
+  --ord-1: #184f95;
+  --ord-2: #256abf;
+  --ord-3: #3987e5;
+  --ord-4: #86b6ef;
+
+  --delta-good: #0ca30c;
+  --shadow: none;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  /* System sans everywhere, including the big numbers — a display face on a hero
+     figure reads as off-brand decoration. */
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--surface-page);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.45;
+  /* The page body must never scroll horizontally; wide content scrolls inside
+     its own container instead. */
+  overflow-x: hidden;
+}
+
+h1, h2, h3 { margin: 0; font-weight: 600; }
+h1 { font-size: 16px; letter-spacing: 0.01em; }
+h2 { font-size: 14px; }
+
+/* --- top bar -------------------------------------------------------------- */
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 12px 20px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 20;
+}
+.brand { display: flex; align-items: center; gap: 9px; }
+.pulse {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--deemph); flex: none;
+}
+.pulse.live { background: var(--good); animation: beat 2s ease-in-out infinite; }
+@keyframes beat { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .pulse.live { animation: none; } }
+
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.sync-state { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.btn {
+  font: inherit; font-size: 13px;
+  padding: 5px 11px; border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface-1); color: var(--text-primary);
+  cursor: pointer;
+}
+.btn:hover { background: var(--surface-page); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn-primary { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+.btn-primary:hover { filter: brightness(1.07); background: var(--series-1); }
+.btn-quiet { border-color: transparent; color: var(--text-secondary); }
+.btn-icon { padding: 5px 8px; }
+
+/* --- setup panel ---------------------------------------------------------- */
+
+.setup {
+  margin: 16px 20px 0; padding: 14px 16px;
+  background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.setup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.setup-body { margin-top: 10px; color: var(--text-secondary); font-size: 13px; }
+.setup-body ol { margin: 8px 0 0; padding-left: 18px; }
+.setup-body li { margin-bottom: 7px; }
+.setup-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; background: var(--surface-page);
+  border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+  word-break: break-all;
+}
+.setup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.notice { display: flex; gap: 8px; align-items: flex-start; padding: 9px 11px; border-radius: 8px; margin-top: 10px; }
+.notice-warn { background: color-mix(in srgb, var(--warning) 14%, transparent); }
+.notice-bad { background: color-mix(in srgb, var(--critical) 12%, transparent); }
+.notice-icon { flex: none; font-weight: 700; }
+
+/* --- filters -------------------------------------------------------------- */
+
+.filters {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px;
+  padding: 14px 20px; margin: 16px 20px 0;
+  background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.filter { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.filter-grow { flex: 1 1 180px; min-width: 0; }
+.filter label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.filter select, .filter input {
+  font: inherit; font-size: 13px;
+  padding: 5px 8px; border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface-page); color: var(--text-primary);
+  min-width: 0; max-width: 100%;
+}
+#custom-range { flex-direction: row; align-items: center; gap: 6px; flex-wrap: wrap; }
+#custom-range label { text-transform: none; letter-spacing: 0; font-size: 12px; }
+.filter-status { margin-left: auto; color: var(--text-muted); font-size: 12px; align-self: center; }
+
+/* --- layout --------------------------------------------------------------- */
+
+main { padding: 16px 20px 40px; display: flex; flex-direction: column; gap: 16px; }
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px 12px;
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+.card-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; margin-bottom: 10px; flex-wrap: wrap;
+}
+.card-sub { margin: 3px 0 0; color: var(--text-muted); font-size: 12px; max-width: 62ch; }
+.card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.grid {
+  display: grid;
+  /* minmax(0, …) so a wide child can never push the track past the viewport. */
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr));
+  gap: 16px;
+}
+
+/* Refetch keeps the frame: hold the previous render at reduced opacity rather
+   than flashing a skeleton and jumping the layout. */
+main.loading .card, main.loading .tiles { opacity: 0.55; transition: opacity 120ms ease; }
+
+/* --- stat tiles ----------------------------------------------------------- */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 1fr));
+  gap: 12px;
+}
+.tile {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 14px 10px;
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+}
+.tile-label { font-size: 12px; color: var(--text-secondary); }
+.tile-value {
+  /* Proportional figures: tabular-nums makes a big standalone number look loose. */
+  font-size: 26px; font-weight: 600; line-height: 1.15;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tile-unit { font-size: 13px; font-weight: 400; color: var(--text-secondary); margin-left: 3px; }
+.tile-meta { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--text-muted); }
+.tile-delta { font-weight: 600; }
+.tile-delta.up { color: var(--delta-good); }
+.tile-delta.down { color: var(--delta-bad); }
+.tile-delta.flat { color: var(--text-muted); }
+.tile-spark { margin-top: 6px; height: 28px; }
+
+/* --- charts --------------------------------------------------------------- */
+
+.chart { position: relative; width: 100%; min-width: 0; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.chart-empty {
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); font-size: 13px;
+}
+.chart .tick { font-variant-numeric: tabular-nums; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
+.legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+.legend-swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+.legend-line { width: 14px; height: 2px; border-radius: 2px; flex: none; }
+
+.tip {
+  position: absolute; pointer-events: none; z-index: 5;
+  background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 9px; min-width: 128px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+  font-size: 12px;
+}
+.tip-title { color: var(--text-muted); margin-bottom: 4px; font-size: 11px; }
+.tip-row { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.tip-key { width: 10px; height: 2px; border-radius: 2px; flex: none; align-self: center; }
+.tip-value { color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.tip-label { color: var(--text-secondary); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-page);
+  color: var(--text-secondary); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.chip[aria-pressed="true"] { color: var(--text-primary); border-color: currentColor; }
+.chip-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--deemph); }
+
+/* --- table view ----------------------------------------------------------- */
+
+/* Every chart has a table twin. Wide tables scroll inside this box, never the page. */
+.table-wrap { max-height: 260px; overflow: auto; margin-top: 4px; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.data-table th, .data-table td {
+  text-align: right; padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.data-table th:first-child, .data-table td:first-child { text-align: left; }
+.data-table thead th {
+  position: sticky; top: 0; background: var(--surface-1);
+  color: var(--text-muted); font-weight: 500;
+}
+
+/* --- log ------------------------------------------------------------------ */
+
+.log { list-style: none; margin: 0; padding: 0; max-height: 210px; overflow: auto; }
+.log li {
+  display: flex; gap: 10px; align-items: baseline;
+  padding: 3px 0; border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.log li:last-child { border-bottom: none; }
+.log-time { color: var(--text-muted); font-variant-numeric: tabular-nums; flex: none; }
+.log-kind {
+  flex: none; min-width: 62px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--text-muted);
+}
+.log-kind.error { color: var(--critical); }
+.log-kind.warn { color: var(--warning); }
+.log-kind.sync, .log-kind.realtime { color: var(--delta-good); }
+.log-msg { color: var(--text-secondary); min-width: 0; overflow-wrap: anywhere; }
+
+@media (max-width: 620px) {
+  .topbar, .filters, main, .setup { padding-left: 12px; padding-right: 12px; }
+  .filters, .setup { margin-left: 12px; margin-right: 12px; }
+  .filter-status { margin-left: 0; }
+}

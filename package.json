@@ -1,0 +1,20 @@
+{
+  "name": "vitals",
+  "version": "1.0.0",
+  "description": "Your own health dashboard — syncs the Google Health API into local SQLite and charts it.",
+  "private": true,
+  "type": "commonjs",
+  "main": "server.js",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "demo": "VITALS_DEMO=1 node server.js",
+    "check:paths": "node scripts/check-paths.js",
+    "test": "node test/run.js"
+  },
+  "dependencies": {
+    "mysql2": "^3.23.3"
+  }
+}
