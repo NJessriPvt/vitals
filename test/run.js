@@ -59,7 +59,7 @@ const asyncTests = [];
 function testAsync(name, fn) { asyncTests.push([name, fn]); }
 
 // Async tests that need a live database; skipped when none is reachable.
-const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period"]);
+const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period"]);
 
 // ---------------------------------------------------------------------------
 // catalog — the filter field is per record type and a wrong one is a 400
@@ -369,6 +369,27 @@ testAsync('a partial token write never nulls the fields it did not pass', async 
   await db.putTokens({ access_token: 'ya29.second', expiry_ms: 4102444900000 });
   assert.strictEqual((await db.getTokens()).refresh_token, '1//refresh');
   await db.clearTokens();
+});
+
+testAsync('a second replica does not simply take its turn', async () => {
+  // The failure this guards: a plain mutex makes replicas take TURNS rather than
+  // stand down, so two of them booting seconds apart BOTH run the sweep and the
+  // rate-limited upstream sees double the traffic. The claim is conditional on
+  // completion time, checked inside the same atomic UPDATE as the lock.
+  const A = 'replica-a';
+  const B = 'replica-b';
+
+  assert.strictEqual(await db.acquireLease('t-lease', A, 60000, 60000), true, 'A claims it');
+  assert.strictEqual(await db.acquireLease('t-lease', B, 60000, 60000), false, 'B is locked out');
+
+  await db.releaseLease('t-lease', A, true);
+  // The lock is free now — a plain mutex would hand it straight to B.
+  assert.strictEqual(await db.acquireLease('t-lease', B, 60000, 60000), false,
+    'B must stand down: the work was just completed by A');
+
+  // A manual sync passes minInterval 0 and is allowed to override the cadence.
+  assert.strictEqual(await db.acquireLease('t-lease', B, 60000, 0), true, 'manual sync overrides');
+  await db.releaseLease('t-lease', B, true);
 });
 
 testAsync('two bedtimes either side of midnight land on different days', async () => {
