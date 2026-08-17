@@ -1,105 +1,106 @@
 'use strict';
 /**
- * vitals — dashboard controller.
+ * vitals — view controller.
  *
- * Two rules shape this file:
+ * Four screens, three endpoints. Each screen asks a different question and gets a
+ * payload built for it, so the browser renders rather than computes: no screen
+ * derives a total, an average or a zone here. Anything that looks like arithmetic in
+ * this file is a formatting decision, not a health figure.
  *
- *   ONE FILTER STATE. The row at the top scopes everything below it. Tiles, charts
- *   and tables all read the same {from, to, bucket}, so two numbers on screen can
- *   never disagree about which slice they describe.
- *
- *   COLOUR FOLLOWS THE ENTITY. A metric's colour comes from its position in the
- *   catalog, not from its position in the current selection — so removing a series
- *   from the compare chart never repaints the ones that remain. A reader who learned
- *   "steps is blue" keeps that.
+ * COLOUR FOLLOWS THE ENTITY. A metric's colour comes from its position in a fixed
+ * list, never from its position in the current view, so a value keeps its colour
+ * wherever it appears.
  */
 
 import {
-  lineChart, barChart, stackedChart, compareChart, sparkline, tableView, fmtNumber,
+  lineChart, barChart, zoneBars, hypnogram, fmtNumber,
 } from './charts.js';
 
 const $ = (id) => document.getElementById(id);
 const api = (p) => `./api/${p}`;
+const DAY_MS = 86400000;
 
 const state = {
-  catalog: null,
+  view: 'day',
+  date: null,          // YYYY-MM-DD for the day/sleep screens
+  hours: 24,           // "last X hours" filter on the day screen
+  sleepDays: 7,
   status: null,
-  rangeDays: 30,
-  from: null,
-  to: null,
-  bucket: 'auto',
-  group: 'all',
-  search: '',
-  compare: [],
-  tables: new Set(),
-  charts: new Map(),
+  data: null,
   loading: false,
 };
 
-// Compare tops out at three lines. Three clears every colour-separation gate
-// including the strict all-pairs one, and past three a multi-line chart needs
-// direct labels that collide the moment the lines converge.
-const COMPARE_MAX = 3;
+// Fixed colour per metric, so steps are the same colour on every screen.
+const TINT = {
+  steps: 1, distance: 2, cardioLoad: 3, calories: 4, heart: 6, sleep: 5,
+};
+const tint = (name) => `var(--series-${TINT[name] || 1})`;
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Small DOM helpers
 // ---------------------------------------------------------------------------
 
-function colorForType(typeId) {
-  const i = state.catalog.types.findIndex((t) => t.id === typeId);
-  const slot = i < 0 ? 0 : i % 8;
-  return getComputedStyle(document.documentElement).getPropertyValue(`--series-${slot + 1}`).trim();
+function el(tag, text, cls) {
+  const n = document.createElement(tag);
+  if (text !== null && text !== undefined) n.textContent = text;
+  if (cls) n.className = cls;
+  return n;
 }
 
-/**
- * Map ordered categories onto the single-hue ramp. `--ord-1` is always the step
- * nearest the surface ("least") through `--ord-4` ("most"), in both themes.
- *
- * `reverse` is for scales whose STACK order is the opposite of their MAGNITUDE
- * order — sleep stacks DEEP at the bottom, but deep sleep is the "most" end and has
- * to get the darkest step. More categories than ramp steps reuse the end step
- * rather than inventing a hue.
- */
-function ordinalColors(keys, reverse = false) {
-  const cs = getComputedStyle(document.documentElement);
-  const ramp = [1, 2, 3, 4].map((i) => cs.getPropertyValue(`--ord-${i}`).trim());
-  const out = {};
-  keys.forEach((k, i) => {
-    const slot = reverse ? (keys.length - 1 - i) : i;
-    out[k] = ramp[Math.min(Math.max(slot, 0), ramp.length - 1)];
-  });
-  return out;
-}
-
-function autoBucket(from, to) {
-  const days = (to - from) / 86400000;
-  if (days <= 2) return '5min';
-  if (days <= 14) return 'hour';
-  if (days <= 120) return 'day';
-  return 'week';
-}
-
-function currentRange() {
-  if (state.rangeDays === 'custom' && state.from && state.to) {
-    return { from: state.from, to: state.to };
+function card(title, sub) {
+  const c = el('section', null, 'card');
+  if (title) {
+    const head = el('div', null, 'card-head');
+    const left = el('div');
+    left.appendChild(el('h2', title));
+    if (sub) left.appendChild(el('p', sub, 'card-sub'));
+    head.appendChild(left);
+    c.appendChild(head);
+    c.head = head;
   }
-  // Snap to local day boundaries. "Last 30 days" measured from this instant makes
-  // the first and last buckets partial, which quietly drags every daily average
-  // down and puts a stub bar at each end of the chart.
-  const end = new Date();
-  end.setHours(0, 0, 0, 0);
-  const to = end.getTime() + 86400000;
-  return { from: to - Number(state.rangeDays) * 86400000, to };
+  return c;
 }
 
-function currentBucket(from, to) {
-  return state.bucket === 'auto' ? autoBucket(from, to) : state.bucket;
+/** A metric tile. `sub` carries the caveat — derived, source, goal. */
+function metric(label, value, unit, sub, colorName) {
+  const m = el('div', null, 'metric');
+  m.style.setProperty('--tint', tint(colorName));
+  m.appendChild(el('div', label, 'metric-label'));
+  const v = el('div', null, 'metric-value');
+  // Formatters already render an absent value as an em dash, so test the RENDERED
+  // text, not the argument — otherwise a missing metric reads "— AZM", a unit
+  // attached to nothing.
+  const shown = value === null || value === undefined || value === '' ? '—' : String(value);
+  v.appendChild(document.createTextNode(shown));
+  if (unit && shown !== '—') v.appendChild(el('span', ` ${unit}`, 'metric-unit'));
+  m.appendChild(v);
+  const s = el('div', null, 'metric-sub');
+  if (sub) {
+    if (sub.derived) {
+      const d = el('span', 'derived', 'derived');
+      s.append(d, document.createTextNode(` ${sub.text || ''}`));
+    } else {
+      s.textContent = sub.text || sub;
+    }
+  }
+  m.appendChild(s);
+  return m;
 }
 
-function tzOffsetMs() {
-  // Negative of getTimezoneOffset: the amount to ADD to UTC to get local time.
-  return -new Date().getTimezoneOffset() * 60000;
+function segmented(options, current, onPick) {
+  const wrap = el('div', null, 'seg');
+  for (const [value, label] of options) {
+    const b = el('button', label);
+    b.type = 'button';
+    b.setAttribute('aria-pressed', String(value === current));
+    b.addEventListener('click', () => onPick(value));
+    wrap.appendChild(b);
+  }
+  return wrap;
 }
+
+const hhmm = (h) => (h === null || h === undefined ? '—'
+  : `${Math.floor(h)}h ${Math.round((h % 1) * 60)}m`);
 
 async function getJson(url) {
   const res = await fetch(url, { headers: { accept: 'application/json' } });
@@ -109,8 +110,7 @@ async function getJson(url) {
 
 async function postJson(url, body) {
   const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body || {}),
   });
   const json = await res.json().catch(() => ({}));
@@ -118,506 +118,409 @@ async function postJson(url, body) {
   return json;
 }
 
-// ---------------------------------------------------------------------------
-// Setup panel
-// ---------------------------------------------------------------------------
+const tzMs = () => -new Date().getTimezoneOffset() * 60000;
+const todayStr = () => new Date(Date.now() + tzMs()).toISOString().slice(0, 10);
 
-function renderSetup() {
-  const s = state.status;
-  const panel = $('setup');
-  const body = $('setup-body');
-  const title = $('setup-title');
-
-  if (s.connected && !s.authError) {
-    panel.hidden = Boolean(!s.demo);
-    if (s.demo) {
-      title.textContent = 'Demo data is loaded';
-      body.replaceChildren(el('p', 'This dashboard is showing generated data, not your own. '
-        + 'Clear it once your real sync has run.'));
-      body.appendChild(actions([
-        ['Clear demo data', 'btn', async () => { await fetch(api('demo'), { method: 'DELETE' }); await refreshAll(); }],
-      ]));
-    }
-    return;
-  }
-
-  panel.hidden = false;
-  title.textContent = s.connected ? 'Reconnect Google Health' : 'Connect Google Health';
-  body.replaceChildren();
-
-  if (s.authError === 'invalid_grant') {
-    body.appendChild(notice('warn', 'Google refused the stored refresh token. '
-      + 'Unpublished OAuth apps expire refresh tokens after 7 days — reconnecting fixes it. '
-      + 'Publishing the app (Testing → In production) stops it recurring.'));
-  }
-
-  if (!s.configured) {
-    const ol = document.createElement('ol');
-    const steps = [
-      ['Create a Google Cloud project and enable the <b>Google Health API</b> on it.', null],
-      ['Configure the OAuth consent screen (External), and add your own Google account under <b>Test users</b>.', null],
-      ['Create an <b>OAuth 2.0 Web application</b> client and add this exact redirect URI:', s.redirectUri],
-      ['Put the client id and secret in the environment and restart:', 'GOOGLE_CLIENT_ID=…  GOOGLE_CLIENT_SECRET=…'],
-    ];
-    for (const [html, code] of steps) {
-      const li = document.createElement('li');
-      const span = document.createElement('span');
-      span.innerHTML = html; // static, authored here — no user or API data
-      li.appendChild(span);
-      if (code) {
-        li.appendChild(document.createElement('br'));
-        const c = document.createElement('code');
-        c.textContent = code;
-        li.appendChild(c);
-      }
-      ol.appendChild(li);
-    }
-    body.appendChild(ol);
-    body.appendChild(notice('warn', 'Access note: Google closed new Fitbit Web API signups in May 2024, '
-      + 'and the Google Health API is its successor. If your Cloud project cannot enable the API, '
-      + 'that is an access decision on Google\'s side, not a bug here — the demo data below still '
-      + 'exercises the whole pipeline.'));
-  }
-
-  const buttons = [];
-  if (s.configured) buttons.push(['Connect Google', 'btn btn-primary', () => { window.location.href = './auth/start'; }]);
-  if (!s.demo) buttons.push(['Load demo data', 'btn', async () => { await postJson(api('demo'), { days: 180 }); await refreshAll(); }]);
-  if (s.connected) buttons.push(['Disconnect', 'btn', async () => { await postJson('./auth/disconnect'); await refreshAll(); }]);
-  body.appendChild(actions(buttons));
+function shiftDate(dateStr, days) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d) + days * DAY_MS).toISOString().slice(0, 10);
 }
 
-function el(tag, text, cls) {
-  const n = document.createElement(tag);
-  if (text) n.textContent = text;
-  if (cls) n.className = cls;
-  return n;
-}
-
-function notice(kind, text) {
-  const d = el('div', null, `notice notice-${kind === 'warn' ? 'warn' : 'bad'}`);
-  d.appendChild(el('span', kind === 'warn' ? '!' : '×', 'notice-icon'));
-  d.appendChild(el('span', text));
-  return d;
-}
-
-function actions(list) {
-  const wrap = el('div', null, 'setup-actions');
-  for (const [label, cls, fn] of list) {
-    const b = el('button', label, cls);
-    b.type = 'button';
-    b.addEventListener('click', () => Promise.resolve(fn()).catch((e) => alert(e.message)));
-    wrap.appendChild(b);
-  }
-  return wrap;
+function prettyDate(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  if (dateStr === todayStr()) return 'Today';
+  if (dateStr === shiftDate(todayStr(), -1)) return 'Yesterday';
+  return date.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
 }
 
 // ---------------------------------------------------------------------------
-// Tiles
+// Day screen
 // ---------------------------------------------------------------------------
 
-function renderTiles(tiles) {
-  const host = $('tiles');
-  host.replaceChildren();
-  if (!tiles.length) {
-    host.appendChild(el('p', 'No data yet for this range.', 'card-sub'));
-    return;
+function renderDay(d) {
+  const main = $('view');
+  main.replaceChildren();
+  const h = d.headline;
+
+  // --- headline metrics ----------------------------------------------------
+  const metrics = el('section', null, 'metrics');
+  metrics.append(
+    metric('Steps', fmtNumber(h.steps, 0), '', h.steps !== null && d.goals.steps
+      ? { text: `goal ${fmtNumber(d.goals.steps, 0, true)}` } : null, 'steps'),
+    metric('Distance', h.distanceKm === null ? null : h.distanceKm.toFixed(2), 'km', null, 'distance'),
+    metric('Cardio load', fmtNumber(h.cardioLoad, 0), '',
+      { derived: true, text: `${Math.round(d.zones.total.trackedMinutes)} min tracked` }, 'cardioLoad'),
+    metric('Energy burned', fmtNumber(h.activeCalories, 0), 'kcal',
+      h.totalCalories ? { text: `${fmtNumber(h.totalCalories, 0)} total` } : null, 'calories'),
+    metric('Sleep', hhmm(h.sleepHours), '',
+      h.sleepEfficiencyPercent ? { text: `${h.sleepEfficiencyPercent}% efficiency` } : null, 'sleep'),
+    metric('Heart rate',
+      h.heartRate ? `${h.heartRate.min}–${h.heartRate.max}` : null, 'bpm',
+      h.heartRate ? { text: `avg ${h.heartRate.avg}` } : null, 'heart'),
+    metric('Resting HR', fmtNumber(h.restingHeartRate, 0), 'bpm',
+      h.restingHeartRateSource === 'derived'
+        ? { derived: true, text: 'lowest while asleep' } : null, 'heart'),
+    metric('Active zone min', fmtNumber(h.activeZoneMinutes, 0), 'AZM', null, 'cardioLoad'),
+  );
+  main.appendChild(metrics);
+
+  // --- heart rate through the day -----------------------------------------
+  const hrCard = card('Heart rate', `${d.heartRateTrace.points.length} points · min/max band`);
+  const hrHost = el('div', null, 'chart');
+  hrCard.appendChild(hrHost);
+  main.appendChild(hrCard);
+
+  // --- zones ---------------------------------------------------------------
+  const zoneCard = card('Time in zones',
+    `Zones 1–6 by % of max HR (${d.zones.maxHeartRate} bpm, from age ${d.age}) · derived from raw samples`);
+  const zoneHost = el('div');
+  zoneCard.appendChild(zoneHost);
+  main.appendChild(zoneCard);
+
+  // --- hourly, with the last-X-hours filter --------------------------------
+  const hourCard = card('Through the day', 'Cardio load and calories per hour');
+  const filter = segmented(
+    [[24, 'All day'], [12, 'Last 12h'], [6, 'Last 6h'], [3, 'Last 3h']],
+    state.hours,
+    (v) => { state.hours = v; renderDay(d); },
+  );
+  hourCard.head.appendChild(filter);
+
+  const loadHost = el('div', null, 'chart');
+  const calLabel = el('p', 'Calories per hour', 'card-sub');
+  const calHost = el('div', null, 'chart');
+  const stepLabel = el('p', 'Steps per hour', 'card-sub');
+  const stepHost = el('div', null, 'chart');
+  hourCard.append(el('p', 'Cardio load per hour', 'card-sub'), loadHost, calLabel, calHost, stepLabel, stepHost);
+  main.appendChild(hourCard);
+
+  // --- sleep summary -------------------------------------------------------
+  if (d.sleep) {
+    const sleepCard = card('Last night', 'Tap Sleep for the full night');
+    const hypHost = el('div', null, 'hypno');
+    sleepCard.appendChild(hypHost);
+    main.appendChild(sleepCard);
+    requestAnimationFrame(() => hypnogram(hypHost, d.sleep.timeline, {
+      from: Date.parse(d.sleep.bedtime), to: Date.parse(d.sleep.wakeTime),
+    }));
   }
-  for (const t of tiles) {
-    const card = el('div', null, 'tile');
-    card.appendChild(el('div', t.label, 'tile-label'));
 
-    const value = el('div', null, 'tile-value');
-    // Tiles compact (12.9K); tooltips and tables stay exact.
-    value.appendChild(document.createTextNode(fmtNumber(t.value, t.precision, true)));
-    value.appendChild(el('span', ` ${t.unit}`, 'tile-unit'));
-    card.appendChild(value);
+  // Charts after layout, so they measure a real width.
+  requestAnimationFrame(() => {
+    const height = window.innerWidth < 560 ? 170 : 210;
 
-    const meta = el('div', null, 'tile-meta');
-    if (t.delta !== null && Number.isFinite(t.delta)) {
-      const up = t.delta > 0.5;
-      const down = t.delta < -0.5;
-      const good = up ? t.upIsGood : down ? !t.upIsGood : null;
-      const cls = good === null ? 'flat' : good ? 'up' : 'down';
-      // The arrow is a second channel so direction never rests on colour alone.
-      const arrow = up ? '↑' : down ? '↓' : '→';
-      meta.appendChild(el('span', `${arrow} ${Math.abs(t.delta).toFixed(1)}%`, `tile-delta ${cls}`));
-    }
-    meta.appendChild(el('span', t.mode));
-    card.appendChild(meta);
+    lineChart(hrHost, {
+      points: d.heartRateTrace.points, unit: 'bpm', precision: 0,
+      bucketMs: d.heartRateTrace.bucketMs, label: 'Heart rate',
+      band: true, color: getComputedStyle(document.documentElement).getPropertyValue('--series-6').trim(),
+    }, height);
 
-    const spark = el('div', null, 'tile-spark');
-    card.appendChild(spark);
-    host.appendChild(card);
-    sparkline(spark, t.spark, colorForType(t.type));
-  }
-}
+    zoneBars(zoneHost, d.zones.zones, d.zones.total.minutes);
 
-// ---------------------------------------------------------------------------
-// Charts
-// ---------------------------------------------------------------------------
+    // The filter trims the window; the payload is always the whole day, so this is
+    // a display slice and never a different question asked of the server.
+    const cut = (rows) => (state.hours >= 24 ? rows : rows.slice(-state.hours));
+    const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
-function visibleTypes() {
-  const withData = new Set((state.status.stats || []).filter((s) => s.points > 0).map((s) => s.data_type));
-  const q = state.search.trim().toLowerCase();
-  return state.catalog.types.filter((t) => {
-    if (!withData.has(t.id)) return false;
-    if (state.group !== 'all' && t.group !== state.group) return false;
-    if (q && !(`${t.label} ${t.group} ${t.id}`.toLowerCase().includes(q))) return false;
-    return true;
+    barChart(loadHost, {
+      points: cut(d.hourly.cardioLoad), unit: 'load', precision: 0,
+      bucketMs: d.hourly.bucketMs, label: 'Cardio load', color: css('--series-3'),
+    }, height);
+    barChart(calHost, {
+      points: cut(d.hourly.activeCalories), unit: 'kcal', precision: 0,
+      bucketMs: d.hourly.bucketMs, label: 'Calories', color: css('--series-4'),
+    }, height);
+    barChart(stepHost, {
+      points: cut(d.hourly.steps), unit: 'steps', precision: 0,
+      bucketMs: d.hourly.bucketMs, label: 'Steps', color: css('--series-1'),
+    }, height);
   });
 }
 
-function chartCard(type, payload, bucketMs) {
-  const card = el('section', null, 'card');
+// ---------------------------------------------------------------------------
+// Week / Month screen
+// ---------------------------------------------------------------------------
 
-  const head = el('div', null, 'card-head');
-  const left = el('div');
-  left.appendChild(el('h2', type.label));
-  const modeWord = { sum: 'total', avg: 'average', last: 'latest', max: 'peak' }[type.agg] || type.agg;
-  left.appendChild(el('p', `${bucketLabel(bucketMs)} ${modeWord} · ${type.unit}`, 'card-sub'));
-  head.appendChild(left);
+const OVERVIEW_COLUMNS = [
+  ['date', 'Day', (r) => prettyDate(r.date)],
+  ['steps', 'Steps', (r) => fmtNumber(r.steps, 0)],
+  ['distanceKm', 'Dist (km)', (r) => (r.distanceKm === null ? '—' : r.distanceKm.toFixed(2))],
+  ['cardioLoad', 'Load', (r) => fmtNumber(r.cardioLoad, 0)],
+  ['activeCalories', 'Active kcal', (r) => fmtNumber(r.activeCalories, 0)],
+  ['sleepHours', 'Sleep', (r) => (r.sleepHours === null ? '—' : hhmm(r.sleepHours))],
+  ['hr', 'HR min–max', (r) => (r.heartRate ? `${r.heartRate.min}–${r.heartRate.max}` : '—')],
+];
 
-  const acts = el('div', null, 'card-actions');
-  const showing = state.tables.has(type.id);
-  const toggle = el('button', showing ? 'Chart' : 'Table', 'btn btn-quiet');
-  toggle.type = 'button';
-  toggle.addEventListener('click', () => {
-    if (showing) state.tables.delete(type.id); else state.tables.add(type.id);
-    render();
-  });
-  acts.appendChild(toggle);
-  head.appendChild(acts);
-  card.appendChild(head);
+function renderOverview(d) {
+  const main = $('view');
+  main.replaceChildren();
+  const a = d.averages;
 
-  const spec = { ...payload, label: type.label, bucketMs, precision: type.precision };
+  const metrics = el('section', null, 'metrics');
+  metrics.append(
+    metric('Steps / day', fmtNumber(a.stepsPerDay, 0), '', { text: `${fmtNumber(d.totals.steps, 0, true)} total` }, 'steps'),
+    metric('Distance / day', a.distanceKmPerDay === null ? null : a.distanceKmPerDay.toFixed(2), 'km',
+      { text: `${d.totals.distanceKm} km total` }, 'distance'),
+    metric('Cardio load / day', fmtNumber(a.cardioLoadPerDay, 0), '',
+      { derived: true, text: `${fmtNumber(d.totals.cardioLoad, 0)} total` }, 'cardioLoad'),
+    metric('Active kcal / day', fmtNumber(a.activeCaloriesPerDay, 0), 'kcal', null, 'calories'),
+    metric('Sleep / night', hhmm(a.sleepHoursPerNight), '', null, 'sleep'),
+    metric('AZM / day', fmtNumber(a.activeZoneMinutesPerDay, 0), '', null, 'cardioLoad'),
+  );
+  main.appendChild(metrics);
 
-  // A legend is present whenever there are two or more series; a single-series
-  // chart doesn't get one, because the card title already names what is plotted.
-  if (payload.chart === 'stacked') {
-    spec.colors = ordinalColors(payload.keys, payload.rampReverse);
-    const legend = el('div', null, 'legend');
-    for (const k of payload.keys) {
-      const item = el('div', null, 'legend-item');
-      const sw = el('span', null, 'legend-swatch');
-      sw.style.background = spec.colors[k];
-      item.appendChild(sw);
-      item.appendChild(el('span', payload.labels[k] || k));
-      legend.appendChild(item);
-    }
-    card.appendChild(legend);
+  const chartsCard = card(`Per day · last ${d.days} days`, 'One bar per day, so gaps are real gaps');
+  const hosts = {};
+  for (const [key, label, color] of [
+    ['steps', 'Steps', '--series-1'],
+    ['cardioLoad', 'Cardio load', '--series-3'],
+    ['sleepHours', 'Sleep (hours)', '--series-5'],
+    ['activeCalories', 'Active calories', '--series-4'],
+  ]) {
+    chartsCard.appendChild(el('p', label, 'card-sub'));
+    hosts[key] = el('div', null, 'chart');
+    hosts[key].dataset.color = color;
+    chartsCard.appendChild(hosts[key]);
   }
+  main.appendChild(chartsCard);
 
-  const body = el('div', null, state.tables.has(type.id) ? 'table-wrap' : 'chart');
-  card.appendChild(body);
+  const tableCard = card('Compare', 'Every metric, day by day');
+  const wrap = el('div', null, 'table-wrap');
+  const table = el('table', null, 'data-table');
+  const thead = el('thead');
+  const hr = el('tr');
+  for (const [, label] of OVERVIEW_COLUMNS) hr.appendChild(el('th', label));
+  thead.appendChild(hr);
+  table.appendChild(thead);
+  const tbody = el('tbody');
+  for (const row of [...d.rows].reverse()) {
+    const tr = el('tr');
+    for (const [key, , fmt] of OVERVIEW_COLUMNS) {
+      const td = el('td', fmt(row));
+      if (key !== 'date' && (row[key] === null || row[key] === undefined)) td.className = 'dim';
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  tableCard.appendChild(wrap);
+  main.appendChild(tableCard);
 
   requestAnimationFrame(() => {
-    if (state.tables.has(type.id)) { tableView(body, spec); return; }
-    const color = colorForType(type.id);
-    let handle;
-    if (payload.chart === 'stacked') handle = stackedChart(body, spec);
-    else if (payload.chart === 'bar') handle = barChart(body, { ...spec, color });
-    // No area fill on a diverging metric: the fill would run from the value down to
-    // the axis floor, so a −0.4 °C reading paints a large block that reads as "a lot
-    // of something" instead of "slightly below normal".
-    else handle = lineChart(body, { ...spec, color, area: !spec.band && !spec.diverging });
-    state.charts.set(type.id, handle);
+    const height = window.innerWidth < 560 ? 150 : 190;
+    const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    for (const [key, host] of Object.entries(hosts)) {
+      barChart(host, {
+        points: d.rows.map((r) => ({ t: r.t, v: r[key] })),
+        unit: '', precision: key === 'sleepHours' ? 1 : 0,
+        bucketMs: DAY_MS, label: key, color: css(host.dataset.color),
+      }, height);
+    }
   });
-
-  return card;
-}
-
-function bucketLabel(ms) {
-  if (ms === 0) return 'Raw';
-  if (ms < 3600000) return `${ms / 60000}-minute`;
-  if (ms === 3600000) return 'Hourly';
-  if (ms === 86400000) return 'Daily';
-  if (ms === 604800000) return 'Weekly';
-  return '';
-}
-
-function renderComparePicker() {
-  const host = $('compare-picker');
-  host.replaceChildren();
-  const candidates = state.catalog.types.filter((t) => t.primary && t.chart !== 'stacked');
-  for (const t of candidates) {
-    const on = state.compare.includes(t.id);
-    const chip = el('button', null, 'chip');
-    chip.type = 'button';
-    chip.setAttribute('aria-pressed', String(on));
-    const dot = el('span', null, 'chip-dot');
-    if (on) dot.style.background = colorForType(t.id);
-    chip.append(dot, document.createTextNode(t.label));
-    chip.addEventListener('click', () => {
-      if (on) state.compare = state.compare.filter((x) => x !== t.id);
-      else if (state.compare.length < COMPARE_MAX) state.compare = [...state.compare, t.id];
-      else return;
-      render();
-    });
-    if (!on && state.compare.length >= COMPARE_MAX) chip.disabled = true;
-    host.appendChild(chip);
-  }
 }
 
 // ---------------------------------------------------------------------------
-// Render
+// Sleep screen
 // ---------------------------------------------------------------------------
 
-let renderToken = 0;
+function renderSleep(d) {
+  const main = $('view');
+  main.replaceChildren();
+  const n = d.night;
+  const a = d.averages;
 
-async function render() {
-  const mine = ++renderToken;
-  const { from, to } = currentRange();
-  const bucket = currentBucket(from, to);
-  const tz = tzOffsetMs();
+  const metrics = el('section', null, 'metrics');
+  metrics.append(
+    metric('Asleep', hhmm(n ? n.hoursAsleep : null), '',
+      d.goalHours ? { text: `goal ${d.goalHours}h` } : null, 'sleep'),
+    metric('In bed', hhmm(n ? n.hoursInBed : null), '', null, 'sleep'),
+    metric('Efficiency', n && n.efficiencyPercent !== null ? n.efficiencyPercent : null, '%',
+      { text: 'asleep ÷ in bed' }, 'sleep'),
+    metric('Deep', hhmm(n && n.stageHours ? n.stageHours.deep : null), '', null, 'sleep'),
+    metric('REM', hhmm(n && n.stageHours ? n.stageHours.rem : null), '', null, 'sleep'),
+    metric('Awake', hhmm(n && n.stageHours ? n.stageHours.awake : null), '', null, 'sleep'),
+  );
+  main.appendChild(metrics);
 
-  $('range-label').textContent = `${new Date(from).toLocaleDateString()} – ${new Date(to).toLocaleDateString()}`
-    + ` · ${bucketLabel({ raw: 0, '5min': 300000, hour: 3600000, day: 86400000, week: 604800000 }[bucket] || 86400000).toLowerCase()}`;
+  const nightCard = card('The night', n && n.bedtime
+    ? `${new Date(n.bedtime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} → ${new Date(n.wakeTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    : 'No staged sleep recorded');
+  const hypHost = el('div', null, 'hypno');
+  nightCard.appendChild(hypHost);
+  main.appendChild(nightCard);
 
-  renderComparePicker();
+  const trendCard = card('Trend', `Averages over ${a.nights} night${a.nights === 1 ? '' : 's'}`);
+  trendCard.head.appendChild(segmented(
+    [[7, 'Week'], [30, 'Month']], state.sleepDays,
+    (v) => { state.sleepDays = v; load(); },
+  ));
+  trendCard.appendChild(el('p',
+    `Average ${hhmm(a.hoursAsleep)} asleep · ${a.efficiencyPercent ?? '—'}% efficiency · `
+    + `deep ${hhmm(a.stageHours.deep)} · REM ${hhmm(a.stageHours.rem)}`, 'card-sub'));
+  const trendHost = el('div', null, 'chart');
+  trendCard.appendChild(trendHost);
+  main.appendChild(trendCard);
 
-  const types = visibleTypes();
-  const wanted = [...new Set([...state.compare, ...types.map((t) => t.id)])];
-
-  document.querySelector('main').classList.add('loading');
-  let summary;
-  let series;
-  try {
-    [summary, series] = await Promise.all([
-      getJson(`${api('summary')}?from=${from}&to=${to}&tz=${tz}`),
-      wanted.length
-        ? getJson(`${api('series')}?type=${wanted.join(',')}&from=${from}&to=${to}&bucket=${bucket}&tz=${tz}`)
-        : Promise.resolve({ series: [] }),
-    ]);
-  } catch (err) {
-    document.querySelector('main').classList.remove('loading');
-    $('log-sub').textContent = err.message;
-    return;
-  }
-  if (mine !== renderToken) return; // a newer render already started
-  document.querySelector('main').classList.remove('loading');
-
-  renderTiles(summary.tiles);
-
-  const byType = new Map(series.series.map((s) => [s.type, s]));
-  const bucketMs = series.bucketMs ?? 86400000;
-
-  // Compare
-  const cmp = state.compare
-    .map((id) => {
-      const t = state.catalog.types.find((x) => x.id === id);
-      const payload = byType.get(id);
-      if (!t || !payload) return null;
-      return {
-        label: t.label, unit: t.unit, precision: t.precision,
-        color: colorForType(id), points: payload.points,
-      };
-    })
-    .filter(Boolean);
-
-  const legend = $('compare-legend');
-  legend.replaceChildren();
-  for (const s of cmp) {
-    const item = el('div', null, 'legend-item');
-    const line = el('span', null, 'legend-line');
-    line.style.background = s.color;
-    item.appendChild(line);
-    item.appendChild(el('span', `${s.label} (${s.unit})`));
-    legend.appendChild(item);
-  }
-  if (cmp.length) compareChart($('compare-chart'), cmp, { bucketMs });
-  else {
-    $('compare-chart').replaceChildren(
-      el('div', `Pick up to ${COMPARE_MAX} metrics to overlay.`, 'chart-empty'),
-    );
-    $('compare-chart').firstChild.style.height = '120px';
-  }
-
-  // Per-metric cards
-  const grid = $('charts');
-  grid.replaceChildren();
-  state.charts.clear();
-  for (const t of types) {
-    const payload = byType.get(t.id);
-    if (!payload || !payload.points.length) continue;
-    grid.appendChild(chartCard(t, payload, bucketMs));
-  }
-  if (!grid.children.length) {
-    grid.appendChild(el('p', 'Nothing matches this filter yet.', 'card-sub'));
-  }
+  requestAnimationFrame(() => {
+    if (n) {
+      hypnogram(hypHost, n.timeline, { from: Date.parse(n.bedtime), to: Date.parse(n.wakeTime) });
+    } else {
+      hypnogram(hypHost, []);
+    }
+    const height = window.innerWidth < 560 ? 160 : 200;
+    const css = (x) => getComputedStyle(document.documentElement).getPropertyValue(x).trim();
+    barChart(trendHost, {
+      points: d.trend.map((x) => ({ t: x.t, v: x.hoursAsleep })),
+      unit: 'h', precision: 1, bucketMs: DAY_MS, label: 'Asleep',
+      goal: d.goalHours, color: css('--series-5'),
+    }, height);
+  });
 }
+
+// ---------------------------------------------------------------------------
+// Shell
+// ---------------------------------------------------------------------------
 
 function renderStatus() {
   const s = state.status;
-  const pulse = document.querySelector('.pulse');
-  const label = $('sync-state');
+  if (!s) return;
+  $('mark').classList.toggle('live', Boolean(s.sync && s.sync.running));
 
-  pulse.classList.toggle('live', Boolean(s.sync.running && (s.connected || s.demo)));
-  if (s.demo && !s.connected) label.textContent = 'demo data';
-  else if (!s.connected) label.textContent = 'not connected';
-  else if (s.sync.phase === 'tail') label.textContent = 'syncing…';
-  else if (s.sync.phase === 'backfill') label.textContent = 'backfilling…';
-  else if (s.sync.lastTailMs) label.textContent = `synced ${ago(s.sync.lastTailMs)}`;
-  else label.textContent = 'idle';
-
+  let label;
+  if (!s.connected) label = 'not connected';
+  else if (s.sync.phase === 'tail') label = 'syncing…';
+  else if (s.sync.phase === 'backfill') label = 'backfilling…';
+  else if (s.sync.lastTailMs) label = `synced ${ago(s.sync.lastTailMs)}`;
+  else label = 'idle';
+  $('sync-state').textContent = label;
   $('btn-sync').disabled = !s.connected;
-
-  const total = (s.stats || []).reduce((a, x) => a + x.points, 0);
-  $('log-sub').textContent = `${total.toLocaleString()} points stored`
-    + (s.webhook.configured ? ' · webhook armed' : ' · polling only');
-
-  const log = $('log');
-  log.replaceChildren();
-  for (const e of s.events || []) {
-    const li = document.createElement('li');
-    li.appendChild(el('span', new Date(e.ts_ms).toLocaleTimeString(), 'log-time'));
-    li.appendChild(el('span', e.kind, `log-kind ${e.kind}`));
-    li.appendChild(el('span', `${e.data_type ? `${e.data_type}: ` : ''}${e.message || ''}`, 'log-msg'));
-    log.appendChild(li);
-  }
-  renderSetup();
 }
 
 function ago(ms) {
-  const s = Math.round((Date.now() - ms) / 1000);
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  return `${Math.round(s / 3600)}h ago`;
+  const sec = Math.round((Date.now() - ms) / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+  return `${Math.round(sec / 3600)}h ago`;
 }
 
-// ---------------------------------------------------------------------------
-// Wiring
-// ---------------------------------------------------------------------------
+function renderDayBar() {
+  const bar = $('daybar');
+  const usesDate = state.view === 'day' || state.view === 'sleep';
+  bar.hidden = !usesDate;
+  if (!usesDate) return;
+
+  const label = $('day-label');
+  label.replaceChildren();
+  label.appendChild(document.createTextNode(prettyDate(state.date)));
+  label.appendChild(el('small', state.date));
+  // No stepping into the future: there is no data there and an empty screen would
+  // read as a bug rather than as tomorrow.
+  $('day-next').disabled = state.date >= todayStr();
+}
+
+let token = 0;
+async function load() {
+  const mine = ++token;
+  const main = $('view');
+  main.classList.add('loading');
+  const tz = tzMs();
+
+  try {
+    let data;
+    if (state.view === 'day') {
+      data = await getJson(`${api('view/day')}?date=${state.date}&tz=${tz}`);
+    } else if (state.view === 'sleep') {
+      data = await getJson(`${api('view/sleep')}?date=${state.date}&days=${state.sleepDays}&tz=${tz}`);
+    } else {
+      data = await getJson(`${api('view/overview')}?days=${state.view === 'week' ? 7 : 30}&tz=${tz}`);
+    }
+    if (mine !== token) return;
+    state.data = data;
+
+    if (state.view === 'day') renderDay(data);
+    else if (state.view === 'sleep') renderSleep(data);
+    else renderOverview(data);
+  } catch (err) {
+    if (mine !== token) return;
+    main.replaceChildren();
+    const c = card('Could not load');
+    c.appendChild(el('div', err.message, 'notice'));
+    main.appendChild(c);
+  } finally {
+    if (mine === token) main.classList.remove('loading');
+  }
+}
+
+function setView(view) {
+  state.view = view;
+  for (const tab of document.querySelectorAll('.tab')) {
+    tab.setAttribute('aria-selected', String(tab.dataset.view === view));
+  }
+  renderDayBar();
+  load();
+}
 
 async function refreshStatus() {
-  state.status = await getJson(api('status'));
-  renderStatus();
+  try {
+    state.status = await getJson(api('status'));
+    renderStatus();
+  } catch { /* the shell should not break because a status poll failed */ }
 }
 
-async function refreshAll() {
-  await refreshStatus();
-  await render();
-}
-
-function initTheme() {
-  const saved = localStorage.getItem('vitals-theme');
-  if (saved) document.documentElement.dataset.theme = saved;
-  $('btn-theme').addEventListener('click', () => {
-    const now = document.documentElement.dataset.theme;
-    const next = now === 'dark' ? 'light' : now === 'light' ? '' : 'dark';
-    if (next) document.documentElement.dataset.theme = next;
-    else delete document.documentElement.dataset.theme;
-    localStorage.setItem('vitals-theme', next);
-    render(); // charts read their colours from CSS tokens at draw time
-  });
-}
-
-function initFilters() {
-  const groupSel = $('f-group');
-  for (const g of state.catalog.groups) {
-    const opt = document.createElement('option');
-    opt.value = g.name;
-    opt.textContent = g.name;
-    groupSel.appendChild(opt);
+function initEvents() {
+  for (const tab of document.querySelectorAll('.tab')) {
+    tab.addEventListener('click', () => setView(tab.dataset.view));
   }
-
-  $('f-range').addEventListener('change', (e) => {
-    state.rangeDays = e.target.value === 'custom' ? 'custom' : Number(e.target.value);
-    $('custom-range').hidden = e.target.value !== 'custom';
-    if (state.rangeDays === 'custom' && !state.from) {
-      const to = Date.now();
-      const from = to - 30 * 86400000;
-      $('f-from').value = new Date(from).toISOString().slice(0, 10);
-      $('f-to').value = new Date(to).toISOString().slice(0, 10);
-      state.from = from;
-      state.to = to;
-    }
-    render();
+  $('day-prev').addEventListener('click', () => {
+    state.date = shiftDate(state.date, -1);
+    renderDayBar(); load();
   });
-
-  const readCustom = () => {
-    const f = $('f-from').value;
-    const t = $('f-to').value;
-    if (!f || !t) return;
-    state.from = new Date(`${f}T00:00:00`).getTime();
-    // Inclusive end date: a range that says "to the 14th" must include the 14th.
-    state.to = new Date(`${t}T00:00:00`).getTime() + 86400000;
-    render();
-  };
-  $('f-from').addEventListener('change', readCustom);
-  $('f-to').addEventListener('change', readCustom);
-
-  $('f-bucket').addEventListener('change', (e) => { state.bucket = e.target.value; render(); });
-  $('f-group').addEventListener('change', (e) => { state.group = e.target.value; render(); });
-
-  let searchTimer;
-  $('f-search').addEventListener('input', (e) => {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => { state.search = e.target.value; render(); }, 180);
+  $('day-next').addEventListener('click', () => {
+    if (state.date >= todayStr()) return;
+    state.date = shiftDate(state.date, 1);
+    renderDayBar(); load();
   });
-
   $('btn-sync').addEventListener('click', async () => {
-    const btn = $('btn-sync');
-    btn.disabled = true;
-    btn.textContent = 'Syncing…';
-    try { await postJson(api('sync')); await refreshAll(); } catch (e) { alert(e.message); } finally {
-      btn.textContent = 'Sync now';
-      btn.disabled = false;
-    }
+    const b = $('btn-sync');
+    b.disabled = true; b.textContent = '…';
+    try { await postJson(api('sync')); await refreshStatus(); await load(); } catch (e) {
+      $('sync-state').textContent = e.message;
+    } finally { b.textContent = 'Sync'; b.disabled = false; }
   });
 
-  $('setup-toggle').addEventListener('click', () => {
-    const body = $('setup-body');
-    body.hidden = !body.hidden;
-    $('setup-toggle').textContent = body.hidden ? 'Show' : 'Hide';
-  });
-}
-
-function initStream() {
-  const es = new EventSource(api('stream'));
-  let timer = null;
-  es.addEventListener('message', (msg) => {
-    let evt;
-    try { evt = JSON.parse(msg.data); } catch { return; }
-    // Coalesce: a tail pass emits an event per data type and each one would
-    // otherwise trigger a full reload.
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      if (evt.count) refreshAll();
-      else refreshStatus();
-    }, 1200);
-  });
-}
-
-function initResize() {
-  let timer;
+  let resizeTimer;
   window.addEventListener('resize', () => {
-    clearTimeout(timer);
-    timer = setTimeout(render, 200);
+    clearTimeout(resizeTimer);
+    // Charts are measured, not fluid, so a resize needs a redraw — debounced,
+    // because a phone rotating fires this a dozen times.
+    resizeTimer = setTimeout(() => {
+      if (!state.data) return;
+      if (state.view === 'day') renderDay(state.data);
+      else if (state.view === 'sleep') renderSleep(state.data);
+      else renderOverview(state.data);
+    }, 220);
+  });
+
+  const es = new EventSource(api('stream'));
+  let evtTimer;
+  es.addEventListener('message', (msg) => {
+    let evt; try { evt = JSON.parse(msg.data); } catch { return; }
+    clearTimeout(evtTimer);
+    evtTimer = setTimeout(() => { refreshStatus(); if (evt.count) load(); }, 1500);
   });
 }
 
 async function boot() {
-  initTheme();
-  state.catalog = await getJson(api('catalog'));
-  state.status = await getJson(api('status'));
-  // Open on the three metrics that answer "how am I doing" without configuration.
-  state.compare = ['steps', 'daily-resting-heart-rate', 'sleep']
-    .filter((id) => state.catalog.types.some((t) => t.id === id && t.chart !== 'stacked'))
-    .slice(0, COMPARE_MAX);
-  if (state.compare.length < COMPARE_MAX) {
-    for (const t of state.catalog.types) {
-      if (state.compare.length >= COMPARE_MAX) break;
-      if (t.primary && t.chart !== 'stacked' && !state.compare.includes(t.id)) state.compare.push(t.id);
-    }
-  }
-  initFilters();
-  initResize();
-  initStream();
-  renderStatus();
-  await render();
+  state.date = todayStr();
+  initEvents();
+  renderDayBar();
+  await refreshStatus();
+  await load();
   setInterval(refreshStatus, 30000);
 }
 
 boot().catch((err) => {
-  document.body.appendChild(el('p', `Failed to start: ${err.message}`, 'card-sub'));
+  $('view').appendChild(el('div', `Failed to start: ${err.message}`, 'notice'));
 });

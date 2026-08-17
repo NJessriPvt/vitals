@@ -38,15 +38,18 @@ function tokens(root = document.documentElement) {
   const cs = getComputedStyle(root);
   const get = (n) => cs.getPropertyValue(n).trim();
   return {
-    surface: get('--surface-1'),
-    text: get('--text-primary'),
-    secondary: get('--text-secondary'),
-    muted: get('--text-muted'),
+    // The surface colour is what the 2px gaps and rings are PAINTED IN, so it has to
+    // be the real panel colour — a stale name here resolves to '' and every gap
+    // silently disappears.
+    surface: get('--surface'),
+    text: get('--text'),
+    secondary: get('--text-2'),
+    muted: get('--muted'),
     grid: get('--grid'),
     axis: get('--axis'),
-    series: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => get(`--series-${i}`)),
-    ordinal: [1, 2, 3, 4].map((i) => get(`--ord-${i}`)),
-    deemph: get('--deemph'),
+    series: [1, 2, 3, 4, 5, 6].map((i) => get(`--series-${i}`)),
+    ordinal: [1, 2, 3, 4, 5, 6].map((i) => get(`--ord-${i}`)),
+    deemph: get('--surface-3'),
   };
 }
 
@@ -60,12 +63,17 @@ function niceStep(raw) {
 }
 
 /** Round y-axis ticks to clean numbers — they carry the values not directly labelled. */
-function yTicks(min, max, count = 4) {
+function yTicks(min, max, count = 4, nonNegative = false) {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return { ticks: [0, 1], lo: 0, hi: 1 };
   if (min === max) {
-    const pad = Math.abs(min) * 0.1 || 1;
-    min -= pad; max += pad;
+    // An all-zero day (no cardio load yet this morning) otherwise pads to ±1 and
+    // draws an axis from -1 to 1 — inventing negative load, which cannot exist.
+    if (nonNegative || min === 0) { min = 0; max = max === 0 ? 1 : max * 1.1; } else {
+      const pad = Math.abs(min) * 0.1;
+      min -= pad; max += pad;
+    }
   }
+  if (nonNegative && min > 0) min = 0;
   const step = niceStep((max - min) / count);
   const lo = Math.floor(min / step) * step;
   const hi = Math.ceil(max / step) * step;
@@ -242,6 +250,10 @@ function drawGrid(svg, t, ticks, yOf, width, precision) {
 
 function drawXAxis(svg, t, points, xOf, bucketMs, plotH) {
   const g = el('g');
+  // When the whole series sits inside about a day, the date is the same on every
+  // tick and repeating it four times is noise that crowds out the time.
+  const span = points.length > 1 ? points[points.length - 1].t - points[0].t : 0;
+  const sameDay = span > 0 && span <= 36 * 3600000;
   g.appendChild(el('line', {
     x1: PAD.left, x2: PAD.left + (svg.viewBox.baseVal.width - PAD.left - PAD.right),
     y1: PAD.top + plotH, y2: PAD.top + plotH,
@@ -266,7 +278,9 @@ function drawXAxis(svg, t, points, xOf, bucketMs, plotH) {
       x: xOf(i), y: PAD.top + plotH + 16, 'text-anchor': 'middle',
       fill: t.muted, 'font-size': 11, class: 'tick',
     });
-    label.textContent = fmtTime(p.t, bucketMs);
+    label.textContent = sameDay
+      ? new Date(p.t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+      : fmtTime(p.t, bucketMs);
     g.appendChild(label);
   });
   svg.appendChild(g);
@@ -440,7 +454,7 @@ export function barChart(host, spec, height = 220) {
   const { svg, width, plotH } = frame(host, height);
   const tip = makeTooltip(host);
 
-  const { ticks, lo, hi } = yTicks(Math.min(0, ...values), Math.max(...values, spec.goal || 0));
+  const { ticks, lo, hi } = yTicks(Math.min(0, ...values), Math.max(...values, spec.goal || 0), 4, values.every((v) => v >= 0));
   const yOf = (v) => PAD.top + plotH - ((v - lo) / (hi - lo || 1)) * plotH;
   drawGrid(svg, t, ticks, yOf, width, spec.precision);
 
@@ -754,6 +768,130 @@ function empty(host, height) {
   div.textContent = 'No data in this range';
   host.appendChild(div);
   return { redraw: () => {} };
+}
+
+
+// --- zone histogram ---------------------------------------------------------
+
+/**
+ * Time in each heart-rate zone, as horizontal bars.
+ *
+ * Zones are an ORDERED scale, so they take the single-hue ordinal ramp — six
+ * categorical hues would say "six unrelated things" about what is really one axis of
+ * intensity. Bars are horizontal because the labels ("Zone 4 · 133–152") are long,
+ * and a horizontal bar gives a label room to be read.
+ *
+ * Zone 1 routinely holds 20+ hours against minutes everywhere else, so the bars are
+ * scaled to the LARGEST zone rather than to the total; scaled to the total, every
+ * zone that matters would be an invisible sliver.
+ */
+export function zoneBars(host, zoneTable, minutesByZone) {
+  host.replaceChildren();
+  const t = tokens();
+  const values = zoneTable.map((z) => minutesByZone[z.zone] || 0);
+  const max = Math.max(...values, 1);
+
+  zoneTable.forEach((z, i) => {
+    const minutes = minutesByZone[z.zone] || 0;
+    const row = document.createElement('div');
+    row.className = 'zone-row';
+
+    const name = document.createElement('div');
+    name.className = 'zone-name';
+    const sw = document.createElement('span');
+    sw.className = 'zone-swatch';
+    sw.style.background = t.ordinal[Math.min(i, t.ordinal.length - 1)];
+    const label = document.createElement('span');
+    label.textContent = `Z${z.zone}`;
+    const bpm = document.createElement('span');
+    bpm.className = 'zone-bpm';
+    bpm.textContent = z.toBpm === null ? `${z.fromBpm}+` : `${z.fromBpm}–${z.toBpm}`;
+    name.append(sw, label, bpm);
+
+    const track = document.createElement('div');
+    track.className = 'zone-track';
+    const fill = document.createElement('div');
+    fill.className = 'zone-fill';
+    fill.style.width = `${(minutes / max) * 100}%`;
+    fill.style.background = t.ordinal[Math.min(i, t.ordinal.length - 1)];
+    track.appendChild(fill);
+
+    const val = document.createElement('div');
+    val.className = 'zone-val';
+    val.textContent = minutes >= 60
+      ? `${Math.floor(minutes / 60)}h ${Math.round(minutes % 60)}m`
+      : `${Math.round(minutes)}m`;
+
+    row.append(name, track, val);
+    row.title = `${z.label} (${z.range}) — ${z.note}`;
+    host.appendChild(row);
+  });
+}
+
+// --- hypnogram --------------------------------------------------------------
+
+const STAGE_ORDER = ['AWAKE', 'REM', 'LIGHT', 'DEEP'];
+const STAGE_SLOT = { AWAKE: 0, REM: 3, LIGHT: 2, DEEP: 5 };
+
+/**
+ * A night, stage by stage. Totals say "seven hours"; this says whether that was
+ * seven hours or four wakings, which is the entire reason a sleep screen exists.
+ *
+ * One lane per stage rather than a single stacked strip: with one strip the eye has
+ * to decode colour to read depth, and short awakenings vanish between neighbours.
+ */
+export function hypnogram(host, timeline, opts = {}) {
+  host.replaceChildren();
+  if (!timeline || !timeline.length) {
+    const empty = document.createElement('div');
+    empty.className = 'chart-empty';
+    empty.textContent = 'No staged sleep for this night';
+    host.appendChild(empty);
+    return;
+  }
+  const t = tokens();
+  const from = opts.from || timeline[0].from;
+  const to = opts.to || timeline[timeline.length - 1].to;
+  const span = Math.max(1, to - from);
+
+  const present = STAGE_ORDER.filter((st) => timeline.some((x) => x.stage === st));
+  for (const stage of present) {
+    const row = document.createElement('div');
+    row.className = 'hypno-row';
+
+    const label = document.createElement('div');
+    label.className = 'hypno-label';
+    label.textContent = stage === 'AWAKE' ? 'Awake' : stage.toLowerCase();
+
+    const track = document.createElement('div');
+    track.className = 'hypno-track';
+    for (const seg of timeline.filter((x) => x.stage === stage)) {
+      const el2 = document.createElement('div');
+      el2.className = 'hypno-seg';
+      const left = ((seg.from - from) / span) * 100;
+      const width = ((seg.to - seg.from) / span) * 100;
+      el2.style.left = `${Math.max(0, left)}%`;
+      // A two-minute waking is 0.4% of a night — floor the width so it stays visible
+      // instead of rounding away to nothing.
+      el2.style.width = `${Math.max(0.7, width)}%`;
+      el2.style.background = t.ordinal[STAGE_SLOT[stage] ?? 2];
+      const mins = Math.round((seg.to - seg.from) / 60000);
+      el2.title = `${stage.toLowerCase()} · ${fmtTimeFull(seg.from, 0)} · ${mins} min`;
+      track.appendChild(el2);
+    }
+
+    row.append(label, track);
+    host.appendChild(row);
+  }
+
+  const axis = document.createElement('div');
+  axis.className = 'hypno-axis';
+  const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const a = document.createElement('span'); a.textContent = clock(from);
+  const b = document.createElement('span'); b.textContent = clock(from + span / 2);
+  const c = document.createElement('span'); c.textContent = clock(to);
+  axis.append(a, b, c);
+  host.appendChild(axis);
 }
 
 export { tokens, fmtNumber, fmtTimeFull };

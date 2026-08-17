@@ -40,6 +40,8 @@ const normalize = require('../lib/normalize');
 const db = require('../lib/db');
 const query = require('../lib/query');
 const webhook = require('../lib/webhook');
+const views = require('../lib/views');
+const metrics = require('../lib/metrics');
 const demo = require('../lib/demo');
 
 let passed = 0;
@@ -59,7 +61,7 @@ const asyncTests = [];
 function testAsync(name, fn) { asyncTests.push([name, fn]); }
 
 // Async tests that need a live database; skipped when none is reachable.
-const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period"]);
+const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period", "overview reports sleep in hours, not scaled twice", "zone bands come from 220 - age and cover the range"]);
 
 // ---------------------------------------------------------------------------
 // catalog — the filter field is per record type and a wrong one is a 400
@@ -499,6 +501,47 @@ testAsync('the delta compares against the previous equal-length period', async (
   assert.strictEqual(tile.upIsGood, false);
 });
 
+testAsync('overview reports sleep in hours, not scaled twice', async () => {
+  // Regression: seriesFor() already applies the type's scale (ms -> hours), and the
+  // row builder divided by 3,600,000 a second time — turning every night into
+  // 0.0000022 and rounding it to a confident 0.
+  const offsetMs = 0;
+  // Three days back, so it falls inside the window rather than in the future.
+  const dayStart = views.dayRange(views.todayString(offsetMs), offsetMs)[0] - 3 * views.DAY_MS;
+  const wake = dayStart + 7 * 3600000;
+  await db.putPoints([{
+    dataType: 'sleep', pointId: 'sleeps/overview-1',
+    startMs: dayStart - 3600000, endMs: wake, anchorMs: wake,
+    value: 7 * 3600000, parts: { DEEP: 2 * 3600000, LIGHT: 5 * 3600000 }, raw: {},
+  }]);
+
+  const payload = await views.overviewPayload(5, offsetMs);
+  const wanted = new Date(dayStart).toISOString().slice(0, 10);
+  const row = payload.rows.find((r) => r.date === wanted);
+  assert.ok(row, `the night must appear in the overview (${wanted})`);
+  assert.strictEqual(row.sleepHours, 7, 'hours, not a scaled-twice fraction');
+});
+
+testAsync('zone bands come from 220 - age and cover the range', async () => {
+  await metrics.setAge(30);
+  const maxHr = metrics.maxHeartRate(await metrics.getAge());
+  assert.strictEqual(maxHr, 190);
+
+  const table = metrics.zoneTable(maxHr);
+  assert.strictEqual(table.length, 6, 'six zones, Whoop-style');
+  assert.strictEqual(table[0].fromBpm, 0);
+  assert.strictEqual(table[1].fromBpm, 95, '50% of 190');
+  assert.strictEqual(table[5].toBpm, null, 'the top zone is open-ended');
+  // Contiguous: no bpm can fall between two zones.
+  for (let i = 1; i < table.length; i++) {
+    assert.strictEqual(table[i].fromBpm, table[i - 1].toBpm, 'zones must not leave a gap');
+  }
+
+  // Rest carries no training load — otherwise a sedentary day outscores a workout.
+  assert.strictEqual(metrics.cardioLoad({ 1: 600 }), 0);
+  assert.strictEqual(metrics.cardioLoad({ 2: 10, 6: 10 }), 10 * 1 + 10 * 5);
+});
+
 // ---------------------------------------------------------------------------
 // demo — proves the whole normalize path, since it uses the same one
 // ---------------------------------------------------------------------------
@@ -621,6 +664,10 @@ test('notification data types resolve in every naming form', () => {
     await db.open({ database: TEST_DATABASE });
     await db.clearAll();
     await db.clearTokens();
+    // Leases too: they are deliberately time-based, so a run that finished less than
+    // a minute ago would correctly refuse the next run's claim and fail the suite for
+    // the very reason the feature exists.
+    await db.handle().query('DELETE FROM leases');
     dbReady = true;
   } catch (err) {
     process.stdout.write(`\n  SKIPPING storage tests — no database (${err.message})\n`

@@ -52,6 +52,8 @@ const demo = require('./lib/demo');
 const {
   BUCKETS, seriesPayload, summaryPayload, tablePayload, assistantDigest,
 } = require('./lib/query');
+const views = require('./lib/views');
+const metrics = require('./lib/metrics');
 
 const PORT = Number(process.env.PORT || 4330);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -125,6 +127,18 @@ function serveStatic(req, res, pathname) {
 // ---------------------------------------------------------------------------
 // Query helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * The viewer's UTC offset in ms. Defaults to the configured house timezone rather
+ * than to UTC: a server-side default of 0 would silently shift every civil day for a
+ * user who is +4, and the failure looks like missing data at midnight.
+ */
+function tzOf(q) {
+  const tz = q.get('tz');
+  const n = Number(tz);
+  if (tz !== null && tz !== '' && Number.isFinite(n)) return n;
+  return Number(process.env.VITALS_TZ_OFFSET_MIN || 240) * 60000;
+}
 
 function rangeOf(q) {
   const to = q.get('to') ? Number(q.get('to')) : Date.now();
@@ -312,6 +326,44 @@ async function route(req, res, url) {
     const offsetMs = tz !== null && tz !== '' && Number.isFinite(Number(tz))
       ? Number(tz) : undefined;
     return json(res, 200, await assistantDigest(Date.now(), offsetMs));
+  }
+
+  // --- the three screens ----------------------------------------------------
+  // One endpoint per view. The day screen alone needs eight metrics, an hourly
+  // breakdown, a zone histogram and an intraday trace — assembling that from generic
+  // series calls would be eight round trips and eight chances to disagree about the
+  // range that is being described.
+
+  if (pathname === '/api/view/day') {
+    const offsetMs = tzOf(q);
+    return json(res, 200, await views.dayPayload(q.get('date'), offsetMs));
+  }
+
+  if (pathname === '/api/view/overview') {
+    const offsetMs = tzOf(q);
+    return json(res, 200, await views.overviewPayload(q.get('days') || 7, offsetMs));
+  }
+
+  if (pathname === '/api/view/sleep') {
+    const offsetMs = tzOf(q);
+    return json(res, 200, await views.sleepPayload(q.get('date'), q.get('days') || 7, offsetMs));
+  }
+
+  /** Age drives max HR, which every zone boundary is a percentage of. */
+  if (pathname === '/api/settings' && req.method === 'GET') {
+    const age = await metrics.getAge();
+    return json(res, 200, {
+      age,
+      maxHeartRate: metrics.maxHeartRate(age),
+      zones: metrics.zoneTable(metrics.maxHeartRate(age)),
+    });
+  }
+
+  if (pathname === '/api/settings' && req.method === 'POST') {
+    const body = await readJson(req);
+    if (body.age !== undefined) await metrics.setAge(body.age);
+    const age = await metrics.getAge();
+    return json(res, 200, { ok: true, age, maxHeartRate: metrics.maxHeartRate(age) });
   }
 
   if (pathname === '/api/stream') return sseHandler(req, res);
