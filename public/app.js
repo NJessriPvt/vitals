@@ -485,7 +485,13 @@ function initEvents() {
   $('btn-sync').addEventListener('click', async () => {
     const b = $('btn-sync');
     b.disabled = true; b.textContent = '…';
-    try { await postJson(api('sync')); await refreshStatus(); await load(); } catch (e) {
+    try {
+      const r = await postJson(api('sync'));
+      // A skipped sync is a real answer, not a silent no-op: something else is
+      // already fetching, so say that rather than implying nothing happened.
+      if (r.skipped) $('sync-state').textContent = 'already syncing…';
+      await refreshStatus(); await load();
+    } catch (e) {
       $('sync-state').textContent = e.message;
     } finally { b.textContent = 'Sync'; b.disabled = false; }
   });

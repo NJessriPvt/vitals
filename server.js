@@ -375,6 +375,13 @@ async function route(req, res, url) {
       const fresh = await sync.syncNow(() => oauth.accessToken(), body.type || null);
       return json(res, 200, { ok: true, fresh });
     } catch (e) {
+      // "Already running" is not a failure for an idempotent refresh: the state the
+      // caller asked for — a sync happening — is already true. Reporting it as an
+      // error makes every scheduled fire that overlaps the app's own loop show up red,
+      // which trains you to ignore the one signal that should mean something.
+      if (e.status === 409) {
+        return json(res, 200, { ok: true, skipped: true, reason: e.message, fresh: 0 });
+      }
       return json(res, 502, { error: e.message });
     }
   }
