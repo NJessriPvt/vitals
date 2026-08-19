@@ -62,7 +62,7 @@ const asyncTests = [];
 function testAsync(name, fn) { asyncTests.push([name, fn]); }
 
 // Async tests that need a live database; skipped when none is reachable.
-const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period", "overview reports sleep in hours, not scaled twice", "zone bands come from 220 - age and cover the range"]);
+const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period", "overview reports sleep in hours, not scaled twice", "zone bands come from 220 - age and cover the range", "activity calories use the database interval rows"]);
 
 // ---------------------------------------------------------------------------
 // catalog — the filter field is per record type and a wrong one is a 400
@@ -541,6 +541,72 @@ testAsync('zone bands come from 220 - age and cover the range', async () => {
   // Rest carries no training load — otherwise a sedentary day outscores a workout.
   assert.strictEqual(metrics.cardioLoad({ 1: 600 }), 0);
   assert.strictEqual(metrics.cardioLoad({ 2: 10, 6: 10 }), 10 * 1 + 10 * 5);
+});
+
+// ---------------------------------------------------------------------------
+// activity calorie attribution — detail wins; a daily estimate only fills gaps
+// ---------------------------------------------------------------------------
+
+test('activity calories prorate a daily-only record', () => {
+  const hour = 3600000;
+  const rows = [{ start_ms: 0, end_ms: 24 * hour, value: 2400 }];
+  assert.strictEqual(db.attributeIntervalValue(rows, 9 * hour, 12 * hour), 300);
+});
+
+test('activity calories use the measured overlap of granular records', () => {
+  const hour = 3600000;
+  const rows = [{ start_ms: 9 * hour, end_ms: 11 * hour, value: 300 }];
+  assert.strictEqual(db.attributeIntervalValue(rows, 10 * hour, 11 * hour), 150);
+});
+
+test('activity calories do not double-count daily and granular overlap', () => {
+  const hour = 3600000;
+  const rows = [
+    { start_ms: 0, end_ms: 24 * hour, value: 2400 },
+    { start_ms: 10 * hour, end_ms: 11 * hour, value: 250 },
+  ];
+  // 09:00–12:00: measured 250 for 10:00–11:00, plus the daily rate only for
+  // the two uncovered hours. The old SUM returned 550 by counting the overlap twice.
+  assert.strictEqual(db.attributeIntervalValue(rows, 9 * hour, 12 * hour), 450);
+});
+
+test('activity calorie intervals are half-open at their boundaries', () => {
+  const hour = 3600000;
+  const rows = [
+    { start_ms: 0, end_ms: 24 * hour, value: 2400 },
+    { start_ms: 10 * hour, end_ms: 11 * hour, value: 250 },
+  ];
+  assert.strictEqual(db.attributeIntervalValue(rows, 9 * hour, 10 * hour), 100,
+    'a granular record starting at the activity end covers none of it');
+  assert.strictEqual(db.attributeIntervalValue(rows, 11 * hour, 12 * hour), 100,
+    'a granular record ending at the activity start covers none of it');
+});
+
+test('zero-duration energy points neither divide by zero nor hide daily fallback', () => {
+  const hour = 3600000;
+  const zero = { start_ms: 9.5 * hour, end_ms: 9.5 * hour, value: 500 };
+  assert.strictEqual(db.attributeIntervalValue([zero], 9 * hour, 10 * hour), null);
+  assert.strictEqual(db.attributeIntervalValue([
+    { start_ms: 0, end_ms: 24 * hour, value: 2400 }, zero,
+  ], 9 * hour, 10 * hour), 100);
+});
+
+testAsync('activity calories use the database interval rows', async () => {
+  const hour = 3600000;
+  const day = Date.UTC(2030, 0, 1);
+  await db.putPoints([
+    {
+      dataType: 'active-energy-burned', pointId: 'calorie-test/daily',
+      startMs: day, endMs: day + 24 * hour, value: 2400, parts: {}, raw: {},
+    },
+    {
+      dataType: 'active-energy-burned', pointId: 'calorie-test/granular',
+      startMs: day + 10 * hour, endMs: day + 11 * hour, value: 250, parts: {}, raw: {},
+    },
+  ]);
+  assert.strictEqual(await db.intervalValue(
+    'active-energy-burned', day + 9 * hour, day + 12 * hour,
+  ), 450);
 });
 
 test('automatic activity detection uses sustained age-aware heart rate', () => {

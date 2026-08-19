@@ -139,6 +139,9 @@ Hand-rolled SVG against the house data-viz method. The palette in `style.css` is
   unless the user explicitly sets an override in Profile.
 - Ten elevated minutes qualify; five minutes below threshold or without samples ends
   the session. Do not bridge an off-wrist gap and call it exercise.
+- Activity calories prefer granular active-energy intervals. A day-scale record is a
+  fallback only for portions of the detected session with no granular coverage; summing
+  both shapes counts the same time twice.
 - Recovery is a transparent personal-baseline comparison, never a claim to reproduce
   WHOOP's proprietary score. Keep `derived`, `method`, and `limitation` in the payload.
 - The demo workout-window cadence must remain no coarser than the one-minute coverage
