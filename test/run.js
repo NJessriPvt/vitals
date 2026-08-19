@@ -62,7 +62,7 @@ const asyncTests = [];
 function testAsync(name, fn) { asyncTests.push([name, fn]); }
 
 // Async tests that need a live database; skipped when none is reachable.
-const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period", "overview reports sleep in hours, not scaled twice", "zone bands come from 220 - age and cover the range", "activity calories use the database interval rows"]);
+const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period", "overview reports sleep in hours, not scaled twice", "zone bands come from 220 - age and cover the range", "activity calories use the database interval rows", "fitness age integrates recent database trends"]);
 
 // ---------------------------------------------------------------------------
 // catalog — the filter field is per record type and a wrong one is a 400
@@ -669,6 +669,118 @@ test('recovery outlook compares physiology with a personal baseline', () => {
     hrv: 50, restingHeartRate: 60, restingHeartRateSource: 'device', sleepHours: 8,
   }, { hrv: [49, 51], restingHeartRate: [60], sleepHours: [7.5] }, 8);
   assert.strictEqual(calibrating.status, 'calibrating');
+});
+
+// ---------------------------------------------------------------------------
+// fitness age — transparent bounded direction, never false precision
+// ---------------------------------------------------------------------------
+
+const coveredFitnessSignals = (overrides = {}) => ({
+  sleep: { averageHours: 8, days: 28 },
+  training: { weeklyMinutes: 150, days: 28 },
+  restingHeartRate: { recentMedian: 60, priorMedian: 60, recentDays: 28, priorDays: 28 },
+  hrv: { recentMedian: 50, priorMedian: 50, recentDays: 28, priorDays: 28 },
+  ...overrides,
+});
+
+test('favorable fitness signals produce a younger estimate', () => {
+  const result = insights.buildFitnessAge(40, coveredFitnessSignals({
+    sleep: { averageHours: 8.5, days: 28 },
+    training: { weeklyMinutes: 250, days: 28 },
+    restingHeartRate: { recentMedian: 55, priorMedian: 60, recentDays: 28, priorDays: 28 },
+    hrv: { recentMedian: 60, priorMedian: 50, recentDays: 28, priorDays: 28 },
+  }));
+  assert.ok(result.estimate < 40);
+  assert.strictEqual(result.direction, 'younger');
+  assert.strictEqual(result.coverage.confidence, 'high');
+  assert.ok(result.factors.every((factor) => factor.status === 'favorable'));
+});
+
+test('unfavorable fitness signals produce an older estimate', () => {
+  const result = insights.buildFitnessAge(40, coveredFitnessSignals({
+    sleep: { averageHours: 6, days: 28 },
+    training: { weeklyMinutes: 20, days: 28 },
+    restingHeartRate: { recentMedian: 66, priorMedian: 60, recentDays: 28, priorDays: 28 },
+    hrv: { recentMedian: 38, priorMedian: 50, recentDays: 28, priorDays: 28 },
+  }));
+  assert.ok(result.estimate > 40);
+  assert.strictEqual(result.direction, 'older');
+});
+
+test('neutral fitness signals stay aligned with profile age', () => {
+  const result = insights.buildFitnessAge(40, coveredFitnessSignals());
+  assert.strictEqual(result.estimate, 40);
+  assert.strictEqual(result.deltaYears, 0);
+  assert.strictEqual(result.direction, 'aligned');
+  assert.ok(result.factors.every((factor) => factor.status === 'neutral'));
+});
+
+test('fitness age stays unavailable when coverage is insufficient', () => {
+  const result = insights.buildFitnessAge(40, coveredFitnessSignals({
+    restingHeartRate: { recentMedian: null, priorMedian: null, recentDays: 3, priorDays: 2 },
+    hrv: { recentMedian: null, priorMedian: null, recentDays: 0, priorDays: 0 },
+  }));
+  assert.strictEqual(result.estimate, null);
+  assert.strictEqual(result.deltaYears, null);
+  assert.strictEqual(result.coverage.availableSignals, 2);
+  assert.strictEqual(result.coverage.confidence, 'insufficient');
+  const missing = result.factors.find((factor) => factor.id === 'hrv');
+  assert.strictEqual(missing.available, false);
+  assert.strictEqual(missing.value, null, 'missing HRV must not become zero');
+});
+
+test('fitness age clamps extreme inputs to a plausible adjustment', () => {
+  const younger = insights.buildFitnessAge(40, coveredFitnessSignals({
+    sleep: { averageHours: 14, days: 28 },
+    training: { weeklyMinutes: 2000, days: 28 },
+    restingHeartRate: { recentMedian: 30, priorMedian: 100, recentDays: 28, priorDays: 28 },
+    hrv: { recentMedian: 500, priorMedian: 10, recentDays: 28, priorDays: 28 },
+  }));
+  const older = insights.buildFitnessAge(40, coveredFitnessSignals({
+    sleep: { averageHours: 2, days: 28 },
+    training: { weeklyMinutes: 0, days: 28 },
+    restingHeartRate: { recentMedian: 120, priorMedian: 40, recentDays: 28, priorDays: 28 },
+    hrv: { recentMedian: 5, priorMedian: 100, recentDays: 28, priorDays: 28 },
+  }));
+  assert.strictEqual(younger.deltaYears, -10);
+  assert.strictEqual(older.deltaYears, 10);
+  assert.ok(younger.estimate >= 18 && older.estimate <= 90);
+});
+
+testAsync('fitness age integrates recent database trends', async () => {
+  const start = Date.UTC(2035, 0, 1);
+  const rows = [];
+  for (let day = 0; day < 56; day++) {
+    const t = start + day * 86400000;
+    const recent = day >= 28;
+    rows.push(
+      {
+        dataType: 'daily-resting-heart-rate', pointId: `fitness-rhr/${day}`,
+        startMs: t, endMs: t, value: recent ? 56 : 60, parts: {}, raw: {},
+      },
+      {
+        dataType: 'daily-heart-rate-variability', pointId: `fitness-hrv/${day}`,
+        startMs: t, endMs: t, value: recent ? 55 : 50, parts: {}, raw: {},
+      },
+    );
+    if (recent) {
+      rows.push(
+        {
+          dataType: 'sleep', pointId: `fitness-sleep/${day}`,
+          startMs: t, endMs: t + 8.5 * 3600000, value: 8.5 * 3600000, parts: {}, raw: {},
+        },
+        {
+          dataType: 'active-zone-minutes', pointId: `fitness-azm/${day}`,
+          startMs: t, endMs: t + 86400000, value: 30, parts: {}, raw: {},
+        },
+      );
+    }
+  }
+  await db.putPoints(rows);
+  const result = await insights.fitnessAgeOutlook(start + 56 * 86400000, 0, { age: 40 }, 8);
+  assert.ok(result.estimate < 40);
+  assert.strictEqual(result.coverage.availableSignals, 4);
+  assert.strictEqual(result.coverage.confidence, 'high');
 });
 
 // ---------------------------------------------------------------------------

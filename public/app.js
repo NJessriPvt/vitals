@@ -152,6 +152,52 @@ function recoveryDetail(signal) {
   return `${delta > 0 ? '+' : ''}${delta} bpm vs ${signal.baseline} bpm baseline`;
 }
 
+function renderFitnessAge(outlook) {
+  const through = outlook.coverage.completeThrough ? ` · through ${outlook.coverage.completeThrough}` : '';
+  const c = card('Fitness age estimate', `Recent ${outlook.coverage.recentWindowDays} complete days${through}`);
+  const stateClass = outlook.direction === 'younger' ? 'favorable'
+    : outlook.direction === 'older' ? 'unfavorable'
+      : outlook.direction === 'aligned' ? 'neutral' : 'unavailable';
+  const summary = el('div', null, `fitness-age-summary ${stateClass}`);
+
+  if (outlook.estimate === null) {
+    summary.append(
+      el('strong', 'Building fitness history'),
+      el('span', `${outlook.coverage.availableSignals} of ${outlook.coverage.requiredSignals} required signals are ready`),
+    );
+  } else {
+    const age = el('div', String(outlook.estimate), 'fitness-age-value');
+    age.appendChild(el('span', ' years', 'metric-unit'));
+    const delta = outlook.deltaYears === 0
+      ? `In line with profile age ${outlook.actualAge}`
+      : `${Math.abs(outlook.deltaYears)} year${Math.abs(outlook.deltaYears) === 1 ? '' : 's'} ${outlook.direction} than profile age ${outlook.actualAge}`;
+    summary.append(age, el('strong', delta), el('span', `${outlook.coverage.confidence} confidence`));
+  }
+  c.appendChild(summary);
+
+  const grid = el('div', null, 'fitness-factor-grid');
+  for (const factor of outlook.factors) {
+    const item = el('article', null, `fitness-factor ${factor.status}`);
+    item.appendChild(el('div', factor.label, 'signal-label'));
+    const value = factor.available ? `${factor.value} ${factor.unit}` : '—';
+    item.appendChild(el('div', value, 'fitness-factor-value'));
+    item.appendChild(el('div', factor.detail, 'signal-detail'));
+    if (factor.available) {
+      const impact = factor.contributionYears;
+      const text = Math.abs(impact) < 0.1 ? 'neutral age effect'
+        : `${impact > 0 ? '+' : ''}${impact} year${Math.abs(impact) === 1 ? '' : 's'} contribution`;
+      item.appendChild(el('div', text, 'fitness-factor-impact'));
+    }
+    grid.appendChild(item);
+  }
+  c.appendChild(grid);
+  c.append(
+    el('p', outlook.method, 'method-note'),
+    el('p', outlook.limitation, 'method-note'),
+  );
+  return c;
+}
+
 function renderRecovery(outlook) {
   const c = card('Recovery outlook', `Personal ${outlook.baselineDays}-day baseline · derived, not WHOOP Recovery`);
   const summary = el('div', null, `recovery-summary ${outlook.status}`);
@@ -246,6 +292,7 @@ function renderDay(d) {
   // --- WHOOP-inspired, explainable insights -------------------------------
   const insightGrid = el('div', null, 'grid-2 insight-section');
   insightGrid.append(
+    renderFitnessAge(d.insights.fitnessAge),
     renderRecovery(d.insights.recovery),
     renderActivities(d.insights.activities),
   );

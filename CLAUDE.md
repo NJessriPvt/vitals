@@ -144,6 +144,10 @@ Hand-rolled SVG against the house data-viz method. The palette in `style.css` is
   both shapes counts the same time twice.
 - Recovery is a transparent personal-baseline comparison, never a claim to reproduce
   WHOOP's proprietary score. Keep `derived`, `method`, and `limitation` in the payload.
+- Fitness age is likewise an experimental, whole-year trend estimate — never WHOOP Age,
+  biological age or a diagnosis. It needs at least three well-covered signals, keeps
+  unavailable inputs null, exposes each bounded contribution, and never moves more than
+  ten years from profile age. RHR and HRV compare with the user's own prior 28 days.
 - The demo workout-window cadence must remain no coarser than the one-minute coverage
   cap or every synthetic workout correctly looks like missing-watch data.
 
