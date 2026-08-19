@@ -26,6 +26,7 @@ const state = {
   hours: 24,           // "last X hours" filter on the day screen
   sleepDays: 7,
   status: null,
+  settings: null,
   data: null,
   loading: false,
 };
@@ -134,6 +135,80 @@ function prettyDate(dateStr) {
   return date.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
 }
 
+const timeOf = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+function recoveryDetail(signal) {
+  if (signal.current === null) return 'Not measured for this day';
+  if (signal.id === 'sleep') {
+    return signal.goalPercent === null ? 'No sleep goal comparison'
+      : `${signal.goalPercent}% of ${signal.goal}h goal · baseline ${hhmm(signal.baseline)}`;
+  }
+  if (signal.baseline === null) return `Need ${5 - Math.min(5, signal.baselineCount)} more baseline day(s)`;
+  if (signal.id === 'hrv') {
+    const delta = signal.deltaPercent;
+    return `${delta > 0 ? '+' : ''}${delta}% vs ${signal.baseline} ms baseline`;
+  }
+  const delta = signal.delta;
+  return `${delta > 0 ? '+' : ''}${delta} bpm vs ${signal.baseline} bpm baseline`;
+}
+
+function renderRecovery(outlook) {
+  const c = card('Recovery outlook', `Personal ${outlook.baselineDays}-day baseline · derived, not WHOOP Recovery`);
+  const summary = el('div', null, `recovery-summary ${outlook.status}`);
+  summary.appendChild(el('strong', outlook.label));
+  summary.appendChild(el('span', outlook.limitation));
+  c.appendChild(summary);
+
+  const grid = el('div', null, 'signal-grid');
+  for (const signal of outlook.signals) {
+    const item = el('article', null, `signal ${signal.status}`);
+    item.appendChild(el('div', signal.label, 'signal-label'));
+    const value = el('div', signal.current === null ? '—' : String(signal.current), 'signal-value');
+    if (signal.current !== null) value.appendChild(el('span', ` ${signal.unit}`, 'metric-unit'));
+    item.append(value, el('div', recoveryDetail(signal), 'signal-detail'));
+    grid.appendChild(item);
+  }
+  c.appendChild(grid);
+  return c;
+}
+
+function renderActivities(activity) {
+  const source = activity.maxHeartRateSource === 'manual'
+    ? `manual max HR ${activity.maxHeartRate}` : `age-estimated max HR ${activity.maxHeartRate}`;
+  const c = card('Detected activities',
+    `At least ${activity.minimumMinutes} min above ${activity.thresholdBpm} bpm · ${source}`);
+
+  if (!activity.sessions.length) {
+    c.appendChild(el('p', 'No sustained elevated-heart-rate activity detected for this day.', 'empty-state'));
+  } else {
+    const list = el('ol', null, 'activity-list');
+    for (const session of activity.sessions) {
+      const row = el('li', null, 'activity-row');
+      const main = el('div', null, 'activity-main');
+      main.append(
+        el('strong', 'Elevated heart rate'),
+        el('span', `${timeOf(session.start)}–${timeOf(session.end)} · ${session.durationMinutes} min`),
+      );
+      const stats = el('div', null, 'activity-stats');
+      for (const [label, value] of [
+        ['Avg', `${session.averageHeartRate} bpm`],
+        ['Max', `${session.maxHeartRate} bpm`],
+        ['Peak', `Zone ${session.peakZone}`],
+        ['Load', String(session.cardioLoad)],
+      ]) {
+        const stat = el('span');
+        stat.append(el('small', label), document.createTextNode(value));
+        stats.appendChild(stat);
+      }
+      row.append(main, stats);
+      list.appendChild(row);
+    }
+    c.appendChild(list);
+  }
+  c.appendChild(el('p', activity.limitation, 'method-note'));
+  return c;
+}
+
 // ---------------------------------------------------------------------------
 // Day screen
 // ---------------------------------------------------------------------------
@@ -162,8 +237,18 @@ function renderDay(d) {
       h.restingHeartRateSource === 'derived'
         ? { derived: true, text: 'lowest while asleep' } : null, 'heart'),
     metric('Active zone min', fmtNumber(h.activeZoneMinutes, 0), 'AZM', null, 'cardioLoad'),
+    metric('HRV', fmtNumber(h.hrv, 0), 'ms', h.hrvSource === 'derived'
+      ? { derived: true, text: 'from raw samples' } : { text: 'recovery input' }, 'heart'),
   );
   main.appendChild(metrics);
+
+  // --- WHOOP-inspired, explainable insights -------------------------------
+  const insightGrid = el('div', null, 'grid-2 insight-section');
+  insightGrid.append(
+    renderRecovery(d.insights.recovery),
+    renderActivities(d.insights.activities),
+  );
+  main.appendChild(insightGrid);
 
   // --- heart rate through the day -----------------------------------------
   const hrCard = card('Heart rate', `${d.heartRateTrace.points.length} points · min/max band`);
@@ -482,6 +567,12 @@ function initEvents() {
     state.date = shiftDate(state.date, 1);
     renderDayBar(); load();
   });
+  $('btn-profile').addEventListener('click', openProfile);
+  $('profile-close').addEventListener('click', () => $('profile-dialog').close());
+  $('profile-cancel').addEventListener('click', () => $('profile-dialog').close());
+  $('profile-age').addEventListener('input', renderProfileEstimate);
+  $('profile-max-hr').addEventListener('input', renderProfileEstimate);
+  $('profile-form').addEventListener('submit', saveProfile);
   $('btn-sync').addEventListener('click', async () => {
     const b = $('btn-sync');
     b.disabled = true; b.textContent = '…';
@@ -516,6 +607,54 @@ function initEvents() {
     clearTimeout(evtTimer);
     evtTimer = setTimeout(() => { refreshStatus(); if (evt.count) load(); }, 1500);
   });
+}
+
+function renderProfileEstimate() {
+  const age = Number($('profile-age').value);
+  const manual = Number($('profile-max-hr').value);
+  const estimate = Number.isFinite(age) && age >= 5 && age <= 120 ? 220 - age : null;
+  const usingManual = $('profile-max-hr').value !== '' && Number.isFinite(manual);
+  $('profile-estimate').textContent = estimate === null ? ''
+    : `Age estimate: ${estimate} bpm · using ${usingManual ? `${manual} bpm override` : 'age estimate'}`;
+}
+
+async function openProfile() {
+  const dialog = $('profile-dialog');
+  $('profile-error').hidden = true;
+  try {
+    state.settings = await getJson(api('settings'));
+    $('profile-age').value = state.settings.age;
+    $('profile-max-hr').value = state.settings.maxHeartRateSource === 'manual'
+      ? state.settings.maxHeartRate : '';
+    renderProfileEstimate();
+    dialog.showModal();
+  } catch (err) {
+    $('sync-state').textContent = err.message;
+  }
+}
+
+async function saveProfile(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!form.reportValidity()) return;
+  const save = $('profile-save');
+  const error = $('profile-error');
+  save.disabled = true;
+  error.hidden = true;
+  try {
+    const maxHeartRate = $('profile-max-hr').value;
+    state.settings = await postJson(api('settings'), {
+      age: Number($('profile-age').value),
+      maxHeartRate: maxHeartRate === '' ? null : Number(maxHeartRate),
+    });
+    $('profile-dialog').close();
+    await load();
+  } catch (err) {
+    error.textContent = err.message;
+    error.hidden = false;
+  } finally {
+    save.disabled = false;
+  }
 }
 
 async function boot() {

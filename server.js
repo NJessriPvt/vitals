@@ -349,21 +349,31 @@ async function route(req, res, url) {
     return json(res, 200, await views.sleepPayload(q.get('date'), q.get('days') || 7, offsetMs));
   }
 
-  /** Age drives max HR, which every zone boundary is a percentage of. */
+  /** Age estimates max HR; a measured override can replace it for every zone. */
   if (pathname === '/api/settings' && req.method === 'GET') {
-    const age = await metrics.getAge();
+    const profile = await metrics.getProfile();
     return json(res, 200, {
-      age,
-      maxHeartRate: metrics.maxHeartRate(age),
-      zones: metrics.zoneTable(metrics.maxHeartRate(age)),
+      ...profile,
+      zones: metrics.zoneTable(profile.maxHeartRate),
     });
   }
 
   if (pathname === '/api/settings' && req.method === 'POST') {
     const body = await readJson(req);
-    if (body.age !== undefined) await metrics.setAge(body.age);
-    const age = await metrics.getAge();
-    return json(res, 200, { ok: true, age, maxHeartRate: metrics.maxHeartRate(age) });
+    if (!body || Array.isArray(body) || typeof body !== 'object') {
+      throw Object.assign(new Error('settings body must be an object'), { status: 400 });
+    }
+    const allowed = new Set(['age', 'maxHeartRate']);
+    const unknown = Object.keys(body).filter((key) => !allowed.has(key));
+    if (unknown.length) {
+      throw Object.assign(new Error(`unknown settings: ${unknown.join(', ')}`), { status: 400 });
+    }
+    const profile = await metrics.setProfile(body);
+    return json(res, 200, {
+      ok: true,
+      ...profile,
+      zones: metrics.zoneTable(profile.maxHeartRate),
+    });
   }
 
   if (pathname === '/api/stream') return sseHandler(req, res);

@@ -9,10 +9,28 @@ Zero dependencies. Node built-ins and vanilla JS, no build step, no `node_module
 ```
 npm run demo     # start with 180 days of generated data, no credentials needed
 npm start        # start for real
-npm test         # 32 tests
+npm test         # pure + MySQL-backed tests
 ```
 
 Then open <http://localhost:4330>.
+
+## WHOOP-inspired insights
+
+The Day screen derives three explainable insights from Google Health data:
+
+- **Age-aware heart-rate zones and cardio load.** Max HR defaults to `220 - age`;
+  the Profile dialog also accepts a measured max-HR override.
+- **Automatic activity detection.** A session appears after at least 10 minutes at
+  or above 60% of max HR. A five-minute dip or missing-sample gap ends it. Because
+  Google Health provides heart rate but not this app's own motion classifier, the app
+  calls it “Elevated heart rate” rather than guessing running, cycling, or lifting.
+- **Recovery outlook.** HRV and resting HR are compared with the user's prior
+  28-day median, and sleep with the eight-hour goal. It stays in “Building baseline”
+  until enough prior readings exist.
+
+These are deliberately labelled **derived**. They are transparent training signals,
+not WHOOP's proprietary Strain or Recovery scores and not medical advice. A missing
+measurement remains missing; it is never turned into zero.
 
 ---
 
@@ -136,8 +154,9 @@ lib/catalog.js   every data type: naming forms, filter field, units, chart form
 lib/health.js    the ONLY module that calls Google for data (limits, chunks, pages)
 lib/oauth.js     the ONLY module that handles tokens
 lib/normalize.js dataPoint JSON -> row; defensive, records what it guessed
-lib/db.js        node:sqlite storage; keeps the raw JSON alongside the derived value
+lib/db.js        MySQL storage; keeps the raw JSON alongside the derived value
 lib/query.js     read side: series, stat tiles, tables
+lib/insights.js  automatic activity sessions + personal recovery outlook
 lib/sync.js      tail + backfill engine
 lib/webhook.js   receiver, handshake, signature verification
 lib/demo.js      synthetic data through the real pipeline

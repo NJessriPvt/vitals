@@ -42,6 +42,7 @@ const query = require('../lib/query');
 const webhook = require('../lib/webhook');
 const views = require('../lib/views');
 const metrics = require('../lib/metrics');
+const insights = require('../lib/insights');
 const demo = require('../lib/demo');
 
 let passed = 0;
@@ -542,6 +543,68 @@ testAsync('zone bands come from 220 - age and cover the range', async () => {
   assert.strictEqual(metrics.cardioLoad({ 2: 10, 6: 10 }), 10 * 1 + 10 * 5);
 });
 
+test('automatic activity detection uses sustained age-aware heart rate', () => {
+  const minute = 60000;
+  const samples = [];
+  for (let i = 0; i <= 22; i++) {
+    // Twelve minutes above 60% of max HR, followed by five minutes back at rest.
+    samples.push({ t: i * minute, v: i >= 2 && i <= 14 ? 130 : 75 });
+  }
+
+  const sessions = insights.detectActivities(samples, { maxHr: 190 });
+  assert.strictEqual(sessions.length, 1);
+  assert.strictEqual(sessions[0].start, 2 * minute);
+  assert.strictEqual(sessions[0].end, 14 * minute);
+  assert.strictEqual(sessions[0].durationMinutes, 12);
+  assert.strictEqual(sessions[0].elevatedMinutes, 12);
+  assert.ok(sessions[0].averageHeartRate >= 120);
+  assert.ok(sessions[0].cardioLoad > 0);
+
+  // The same absolute HR can be activity for an older profile and below the entry
+  // zone for a younger one — proof that age/max HR is load-bearing, not decoration.
+  const moderate = Array.from({ length: 16 }, (_, i) => ({ t: i * minute, v: 112 }));
+  assert.strictEqual(insights.detectActivities(moderate, { maxHr: 170 }).length, 1);
+  assert.strictEqual(insights.detectActivities(moderate, { maxHr: 200 }).length, 0);
+});
+
+test('automatic activity detection rejects short bursts and off-wrist gaps', () => {
+  const minute = 60000;
+  const short = Array.from({ length: 10 }, (_, i) => ({ t: i * minute, v: 140 }));
+  assert.strictEqual(insights.detectActivities(short, { maxHr: 190 }).length, 0,
+    'nine elapsed minutes is below the ten-minute minimum');
+
+  const gapped = [
+    ...Array.from({ length: 7 }, (_, i) => ({ t: i * minute, v: 140 })),
+    ...Array.from({ length: 7 }, (_, i) => ({ t: (i + 11) * minute, v: 140 })),
+  ];
+  assert.strictEqual(insights.detectActivities(gapped, { maxHr: 190 }).length, 0,
+    'a five-minute missing-watch gap must not be filled in as exercise');
+});
+
+test('recovery outlook compares physiology with a personal baseline', () => {
+  const baseline = {
+    hrv: [48, 50, 51, 49, 50, 52, 47],
+    restingHeartRate: [59, 60, 61, 60, 60, 62, 58],
+    sleepHours: [7.2, 7.5, 7.8, 7.4, 7.6, 7.3, 7.7],
+  };
+  const strong = insights.buildRecoveryOutlook({
+    hrv: 56, restingHeartRate: 57, restingHeartRateSource: 'device', sleepHours: 8.1,
+  }, baseline, 8);
+  assert.strictEqual(strong.status, 'strong');
+  assert.ok(strong.signals.every((signal) => signal.status === 'positive'));
+
+  const low = insights.buildRecoveryOutlook({
+    hrv: 40, restingHeartRate: 64, restingHeartRateSource: 'device', sleepHours: 6,
+  }, baseline, 8);
+  assert.strictEqual(low.status, 'low');
+  assert.ok(low.signals.every((signal) => signal.status === 'negative'));
+
+  const calibrating = insights.buildRecoveryOutlook({
+    hrv: 50, restingHeartRate: 60, restingHeartRateSource: 'device', sleepHours: 8,
+  }, { hrv: [49, 51], restingHeartRate: [60], sleepHours: [7.5] }, 8);
+  assert.strictEqual(calibrating.status, 'calibrating');
+});
+
 // ---------------------------------------------------------------------------
 // demo — proves the whole normalize path, since it uses the same one
 // ---------------------------------------------------------------------------
@@ -557,6 +620,14 @@ test('demo data normalizes with no shape warnings', () => {
     rows += r.length;
   }
   assert.ok(rows > 100);
+});
+
+test('demo point ids stay unique across adjacent days', () => {
+  const byType = demo.generate(3);
+  for (const [typeId, points] of byType) {
+    const names = points.map((point) => point.name);
+    assert.strictEqual(new Set(names).size, names.length, `${typeId} has colliding demo ids`);
+  }
 });
 
 // ---------------------------------------------------------------------------

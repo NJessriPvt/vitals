@@ -131,6 +131,19 @@ Hand-rolled SVG against the house data-viz method. The palette in `style.css` is
   the largest tick and the step. Per-tick formatting prints `5,000` under `10.0K`,
   and integer rounding prints a 2.5 step as `0, 3, 5, 8, 10`.
 
+## Derived insights (`lib/insights.js`)
+
+- Activity detection is heart-rate-only. It may label a session “Elevated heart
+  rate”; it must not guess an activity type without movement/GPS evidence.
+- The Zone 3 entry threshold is 60% of the profile's max HR. Max HR uses `220 - age`
+  unless the user explicitly sets an override in Profile.
+- Ten elevated minutes qualify; five minutes below threshold or without samples ends
+  the session. Do not bridge an off-wrist gap and call it exercise.
+- Recovery is a transparent personal-baseline comparison, never a claim to reproduce
+  WHOOP's proprietary score. Keep `derived`, `method`, and `limitation` in the payload.
+- The demo workout-window cadence must remain no coarser than the one-minute coverage
+  cap or every synthetic workout correctly looks like missing-watch data.
+
 ## Testing
 
 `test/run.js` deliberately targets what fails *silently*: filter syntax, window
