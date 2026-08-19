@@ -195,6 +195,7 @@ function renderActivities(activity) {
         ['Max', `${session.maxHeartRate} bpm`],
         ['Peak', `Zone ${session.peakZone}`],
         ['Load', String(session.cardioLoad)],
+        ['Burned', session.activeCalories === null ? '—' : `${fmtNumber(session.activeCalories, 0)} kcal`],
       ]) {
         const stat = el('span');
         stat.append(el('small', label), document.createTextNode(value));
