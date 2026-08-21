@@ -17,9 +17,11 @@ Then open <http://localhost:4330>.
 
 ## What it looks like
 
-Every screenshot below is `npm run demo` — generated data through the real
-normalize → store → query path, so the layouts, scales and empty states are the ones
-live data gets. No real health data is published in this repository.
+Every screenshot below is `npm run demo` on a 390-point-wide phone viewport — this
+is a mobile-web-first dashboard, so that is the frame it is designed in. The data is
+generated, but it travels the real normalize → store → query path, so the layouts,
+scales and empty states are the ones live data gets. No real health data is published
+in this repository.
 
 ![The Today screen: readiness ring, energy forecast, activity rings and today's vitals](docs/screenshots/today.png)
 
