@@ -274,8 +274,12 @@ function drawXAxis(svg, t, points, xOf, bucketMs, plotH) {
       if (prev) g.removeChild(prev);
     }
     lastX = xOf(i);
+    // The final tick sits at the right edge of the plot, so centring it hangs half
+    // the label outside the SVG and the clock time renders clipped. Anchor the last
+    // one to its end instead — it is the only tick with no room to its right.
     const label = el('text', {
-      x: xOf(i), y: PAD.top + plotH + 16, 'text-anchor': 'middle',
+      x: xOf(i), y: PAD.top + plotH + 16,
+      'text-anchor': isLast && points.length > 1 ? 'end' : 'middle',
       fill: t.muted, 'font-size': 11, class: 'tick',
     });
     label.textContent = sameDay

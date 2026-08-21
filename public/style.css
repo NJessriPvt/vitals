@@ -659,11 +659,14 @@ main.loading { opacity: 0.5; transition: opacity 120ms ease; }
 .bench-table .n.ghosted { color: var(--muted); font-weight: 400; }
 
 /* --- sleep extras ---------------------------------------------------------- */
-.debt-hero { display: flex; align-items: baseline; gap: 12px; }
-.debt-hero b { font-family: var(--font-num); font-weight: 300; font-size: 40px; font-variant-numeric: tabular-nums; }
-.debt-hero .sub { color: var(--muted); font-size: 11.5px; }
+/* The headline is ONE duration. At phone width the flex line ran out of room and
+   "7h 38m" broke across two lines, which reads as two separate figures — so the
+   number never wraps and the subline moves to its own line instead. */
+.debt-hero { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.debt-hero b { font-family: var(--font-num); font-weight: 300; font-size: 40px; font-variant-numeric: tabular-nums; white-space: nowrap; flex: none; }
+.debt-hero .sub { color: var(--muted); font-size: 11.5px; min-width: 0; flex: 1 1 12ch; }
 .nap-row { display: flex; gap: 9px; align-items: baseline; font-size: 12px; color: var(--text-2); padding: 4px 0; }
-.nap-row b { color: var(--text); font-variant-numeric: tabular-nums; }
+.nap-row b { color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pattern-sentence { font-size: 13.5px; color: var(--text); margin: 4px 0 10px; }
 .pattern-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .pattern-metric { background: var(--surface-2); border-radius: 10px; padding: 8px 10px; border-top: 2px solid var(--muted); }
