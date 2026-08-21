@@ -928,7 +928,7 @@ export function ringGauge(host, spec) {
   const size = spec.size || 148;
   const r = size / 2 - 10;
   const c = size / 2;
-  const svg = el('svg', { width: size, height: size, viewBox: `0 0 ${size} ${size}`, role: 'img' });
+  const svg = el('svg', { viewBox: `0 0 ${size} ${size}`, role: 'img', class: 'gauge-svg' });
   svg.appendChild(el('circle', { cx: c, cy: c, r, fill: 'none', stroke: t.grid, 'stroke-width': 9 }));
   if (spec.value !== null && spec.value !== undefined) {
     const frac = Math.max(0.004, Math.min(1, spec.value / (spec.max || 100)));
@@ -970,7 +970,7 @@ export function arcGauge(host, spec) {
   const c = w / 2;
   const cy = h - 8;
   const r = w / 2 - 12;
-  const svg = el('svg', { width: w, height: h, viewBox: `0 0 ${w} ${h}`, role: 'img' });
+  const svg = el('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', class: 'gauge-svg' });
   const at = (frac) => Math.PI + Math.PI * Math.max(0, Math.min(1, frac));
   const arc = (f0, f1, stroke, width, cap = 'butt') => {
     const a0 = at(f0);
@@ -1008,7 +1008,7 @@ export function ringTrio(host, rings) {
   const t = tokens();
   const size = 128;
   const c = size / 2;
-  const svg = el('svg', { width: size, height: size, viewBox: `0 0 ${size} ${size}`, role: 'img' });
+  const svg = el('svg', { viewBox: `0 0 ${size} ${size}`, role: 'img', class: 'gauge-svg' });
   rings.forEach((ring, i) => {
     const r = c - 10 - i * 17;
     svg.appendChild(el('circle', { cx: c, cy: c, r, fill: 'none', stroke: t.grid, 'stroke-width': 12 }));

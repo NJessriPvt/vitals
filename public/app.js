@@ -303,7 +303,7 @@ function renderToday(d) {
       value: d.readiness.score, max: 100,
       sublabel: 'readiness',
       color: bandVar ? css(bandVar) : css('--muted'),
-      size: window.innerWidth < 560 ? 132 : 152,
+      size: 150,
     });
     // A counter of strain SPENT (it fills as the day accumulates), never a
     // budget-remaining gauge — the band on the track is the day's target.
