@@ -17,47 +17,38 @@ Then open <http://localhost:4330>.
 
 ## What it looks like
 
-Every screenshot below is `npm run demo` on a 390-point-wide phone viewport — this
-is a mobile-web-first dashboard, so that is the frame it is designed in. The data is
-generated, but it travels the real normalize → store → query path, so the layouts,
-scales and empty states are the ones live data gets. No real health data is published
-in this repository.
+`npm run demo` on a 390-point-wide phone viewport — this is a mobile-web-first
+dashboard, so that is the frame it is designed in. The data is generated, but it
+travels the real normalize → store → query path, so these are the layouts, scales and
+empty states live data gets. No real health data is published in this repository.
 
-![The Today screen: readiness ring, energy forecast, activity rings and today's vitals](docs/screenshots/today.png)
+<table>
+<tr>
+<td width="33%"><img src="docs/screenshots/today.png" alt="Today: readiness ring against your own 28-day baselines, strain spent, and an energy battery"></td>
+<td width="33%"><img src="docs/screenshots/sleep.png" alt="Sleep: the night's hypnogram, time in bed and efficiency"></td>
+<td width="33%"><img src="docs/screenshots/train.png" alt="Train: the latest session with its heart-rate zone breakdown and effort"></td>
+</tr>
+<tr>
+<td><b>Today</b> — readiness with every contributor shown, a strain target, and the day's rings.</td>
+<td><b>Sleep</b> — the night first: hypnogram, learned need against rolling debt, overnight HR dip.</td>
+<td><b>Train</b> — typed workouts merged with HR-detected sessions, load corridor, fitness/fatigue.</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/trends.png" alt="Trends: a compare workbench putting two days on one indexed axis"></td>
+<td><img src="docs/screenshots/you.png" alt="You: fitness age with each bounded contribution named"></td>
+<td><img src="docs/screenshots/heartrate.png" alt="Heart rate through the day in five-minute buckets with a personal reference band"></td>
+</tr>
+<tr>
+<td><b>Trends</b> — any day vs any other, or vs your typical same-weekday band, on one axis.</td>
+<td><b>You</b> — the transparent fitness age, resilience, a quarterly review and milestones.</td>
+<td><b>Heart rate</b> — five-minute buckets, your own 14-day p10–p90 behind it, gaps left as gaps.</td>
+</tr>
+</table>
 
-*Today — readiness against your own 28-day baselines, every contributor shown, with
-the strain target, energy forecast and the day's rings.*
+<img src="docs/screenshots/profile.png" alt="The physiology profile dialog, with age shown as a read-only value from the Google account" width="300">
 
-<details>
-<summary><b>The other four screens</b></summary>
-
-![The Sleep screen: hypnogram, sleep need and debt, overnight heart-rate dip and night temperature](docs/screenshots/sleep.png)
-
-*Sleep — the night first: hypnogram, learned need against rolling debt, overnight HR
-dip, night temperature against your own band, and the month's pattern.*
-
-![The Train screen: latest session with zone breakdown, load corridor, fitness and fatigue, season heat calendar and personal records](docs/screenshots/train.png)
-
-*Train — typed workouts merged with HR-detected sessions, the healthy load corridor,
-fitness/fatigue/form, a season heat calendar, and the strength log kept beside cardio
-load rather than summed into it.*
-
-![The Trends screen: day-versus-day compare workbench and long-range trend verdicts](docs/screenshots/trends.png)
-
-*Trends — compare any day with any other (or with your typical same-weekday band) on
-a single indexed axis, plus 90-vs-365-day verdicts.*
-
-![The You screen: fitness age with a 12-month arc, resilience, quarterly review and milestones](docs/screenshots/you.png)
-
-*You — the transparent fitness age with each bounded contribution named, a slow
-resilience level, a quarterly review and lifetime milestones.*
-
-![The physiology profile dialog, showing age as a read-only value sourced from the Google account](docs/screenshots/profile.png)
-
-*Profile — age is read from your Google account, not typed in. Max heart rate is the
-one thing you can override, because a measured max beats any estimate.*
-
-</details>
+**Profile** — age is read from your Google account, not typed in. Max heart rate is the
+one thing you can override, because a measured max beats any estimate.
 
 ## The five rooms
 
