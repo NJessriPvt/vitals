@@ -276,6 +276,17 @@ function renderToday(d) {
   methodNote(stressCard, d.stress);
   main.appendChild(stressCard);
 
+  // --- heart rate through the day ---------------------------------------------
+  const hrDay = d.heartRateDay;
+  const hrCard = card('Heart rate today', hrDay.available
+    ? `${hrDay.min}–${hrDay.max} bpm · ${Math.round(hrDay.trackedMinutes / 60)}h measured`
+    : 'No heart rate measured yet today');
+  hrCard.classList.add('span-2');
+  const hrHost = el('div');
+  hrCard.appendChild(hrHost);
+  methodNote(hrCard, hrDay);
+  main.appendChild(hrCard);
+
   // --- symptom radar (only when it has something to say) --------------------
   if (d.radar.level === 'minor' || d.radar.level === 'major') {
     const radar = card('Symptom radar', `${d.radar.flaggedCount} overnight signals outside your range`);
@@ -385,6 +396,19 @@ function renderToday(d) {
       fcHost.replaceChildren(el('div', 'No wake time measured this morning', 'chart-empty'));
     }
     stateStrip(stressHost, d.stress.points);
+    if (hrDay.available) {
+      // `band` draws each bucket's real min–max; `refBand` is the viewer's own
+      // p10–p90 behind it. No connectGaps — an unworn watch is a gap, not a line.
+      const hrSpec = {
+        points: hrDay.points, unit: hrDay.unit, precision: 0,
+        bucketMs: hrDay.bucketMinutes * 60000, label: 'Heart rate',
+        color: seriesOf('heart'), band: true, refBand: hrDay.refBand,
+      };
+      withTable(hrCard, hrHost,
+        () => lineChart(hrHost, hrSpec, window.innerWidth < 560 ? 170 : 220), hrSpec);
+    } else {
+      hrHost.replaceChildren(el('div', 'No heart-rate samples for this day', 'chart-empty'));
+    }
     ringTrio(trioHost, d.rings.map((r) => ({ fraction: r.fraction, color: ringColors[r.id] })));
   });
 }

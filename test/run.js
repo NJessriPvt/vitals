@@ -61,7 +61,7 @@ const asyncTests = [];
 function testAsync(name, fn) { asyncTests.push([name, fn]); }
 
 // Async tests that need a live database; skipped when none is reachable.
-const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period", "overview reports sleep in hours, not scaled twice", "zone bands come from 220 - age and cover the range", "an unsynced age reports itself as an assumption", "setProfile cannot write age, only the max HR override", "a failed profile read leaves the last known age and does not fail the sweep", "activity calories use the database interval rows", "fitness age integrates recent database trends", "strength log validates, stores and deletes entries", "screen payloads survive an empty database", "daily load prefers device zone minutes and marks rest days zero"]);
+const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period", "overview reports sleep in hours, not scaled twice", "zone bands come from 220 - age and cover the range", "an unsynced age reports itself as an assumption", "setProfile cannot write age, only the max HR override", "a failed profile read leaves the last known age and does not fail the sweep", "activity calories use the database interval rows", "fitness age integrates recent database trends", "strength log validates, stores and deletes entries", "an unmeasured five minutes is a heart-rate gap, never a zero", "the personal heart-rate band stays null until there is history", "screen payloads survive an empty database", "daily load prefers device zone minutes and marks rest days zero"]);
 
 // ---------------------------------------------------------------------------
 // catalog — the filter field is per record type and a wrong one is a 400
@@ -1437,6 +1437,89 @@ testAsync('strength log validates, stores and deletes entries', async () => {
   assert.strictEqual(listed.length, 1);
   assert.strictEqual(await db.strengthDelete(entry.id), true);
   assert.strictEqual(await db.strengthDelete(entry.id), false, 'a second delete finds nothing');
+});
+
+/**
+ * The intraday heart-rate chart is the one place a missing hour is most tempting to
+ * draw as a low number: a watch on the nightstand and a genuinely calm 48 bpm look
+ * identical once a gap becomes a zero. They must not.
+ */
+testAsync('an unmeasured five minutes is a heart-rate gap, never a zero', async () => {
+  await db.clearAll();
+  const day = Date.UTC(2031, 5, 12);
+  const bucket = 5 * 60000;
+  // Two measured stretches with a deliberate hole between them.
+  const rows = [];
+  for (let i = 0; i < 12; i++) {
+    rows.push({
+      dataType: 'heart-rate', pointId: `hr-morning/${i}`,
+      startMs: day + i * bucket, endMs: day + i * bucket + 60000,
+      value: 60 + i, raw: {},
+    });
+  }
+  for (let i = 40; i < 52; i++) {
+    rows.push({
+      dataType: 'heart-rate', pointId: `hr-afternoon/${i}`,
+      startMs: day + i * bucket, endMs: day + i * bucket + 60000,
+      value: 95 + (i % 5), raw: {},
+    });
+  }
+  await db.putPoints(rows);
+
+  const payload = await screens.todayPayload('2031-06-12', 0);
+  const hr = payload.heartRateDay;
+  assert.ok(hr.available, 'a day with samples must report as available');
+  assert.strictEqual(hr.bucketMinutes, 5);
+
+  const at = (i) => hr.points.find((p) => p.t === day + i * bucket);
+  assert.strictEqual(at(0).v, 60, 'a measured bucket carries its average');
+  assert.strictEqual(at(20).v, null, 'an unmeasured bucket is null, not 0');
+  assert.strictEqual(at(20).lo, null, 'and carries no invented range either');
+  assert.strictEqual(at(40).v, 95);
+
+  // Dense: every bucket of the day is present so the chart positions by real time.
+  assert.strictEqual(hr.points.length, 288, 'a whole day of five-minute buckets');
+  assert.strictEqual(hr.trackedMinutes, 24 * 5, 'only the measured buckets count');
+  assert.strictEqual(hr.min, 60, 'min/max come from the real per-bucket extremes');
+  assert.strictEqual(hr.max, 99);
+});
+
+/**
+ * The reference band is only meaningful as "usual FOR ME". PERCENT_RANK ranks the
+ * first row at 0, so a couple of buckets would yield a confident-looking band of
+ * almost no width — worse than no band, because the chart would paint it.
+ */
+testAsync('the personal heart-rate band stays null until there is history', async () => {
+  await db.clearAll();
+  const start = Date.UTC(2031, 6, 1);
+  const bucket = 5 * 60000;
+  const thin = [];
+  for (let i = 0; i < 6; i++) {
+    thin.push({
+      dataType: 'heart-rate', pointId: `hr-thin/${i}`,
+      startMs: start + i * bucket, endMs: start + i * bucket + 60000, value: 70, raw: {},
+    });
+  }
+  await db.putPoints(thin);
+  assert.strictEqual(
+    await db.bucketBand('heart-rate', start, start + 86400000, bucket, 0),
+    null,
+    'six buckets is not a personal range',
+  );
+
+  const more = [];
+  for (let i = 6; i < 60; i++) {
+    more.push({
+      dataType: 'heart-rate', pointId: `hr-more/${i}`,
+      startMs: start + i * bucket, endMs: start + i * bucket + 60000,
+      value: 50 + i, raw: {},
+    });
+  }
+  await db.putPoints(more);
+  const band = await db.bucketBand('heart-rate', start, start + 86400000, bucket, 0);
+  assert.ok(band, 'enough buckets produce a band');
+  assert.ok(band.p10 < band.median && band.median < band.p90, 'the band must have width');
+  assert.strictEqual(band.n, 60);
 });
 
 testAsync('screen payloads survive an empty database', async () => {

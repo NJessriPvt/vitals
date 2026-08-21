@@ -64,7 +64,9 @@ Each screen asks one question and gets one purpose-built endpoint
 date-jump overlay). These payloads are also the API a native app would consume —
 they carry their own dates, units, methods and freshness.
 
-- **Today** — a readiness score (0–100 against your own 28-day baselines, with
+- **Today** — heart rate through the day at five-minute buckets (each bucket's real
+  min–max shaded, your own 14-day p10–p90 behind it, gaps left as gaps), a readiness
+  score (0–100 against your own 28-day baselines, with
   every contributor shown), day strain on a bounded 0–21 TRIMP transform with a
   readiness-derived target band, an energy battery, an hourly stress timeline, a
   Rise-style energy forecast for the day ahead, three adaptive rings

@@ -144,7 +144,13 @@ Hand-rolled SVG against the house data-viz method. The palette in `style.css` is
   `corridorChart` is band + dotted line; `heatCalendar` is single-hue sequential
   with untracked days as empty dashed cells (not zero-coloured), and every cell is
   a button that jumps to its day; `lineChart` gained `refBand` — the personal
-  p10–p90 painted behind any series. The stress `stateStrip` (on Today) marks
+  p10–p90 painted behind any series — the Today heart-rate chart pairs it with
+  `band: true`, whose shaded range is each bucket's real min–max, because an
+  averaged 71 bpm hides a 48–160 day. Its reference band comes from
+  `db.bucketBand`, which takes the quantiles IN SQL over bucket averages at the
+  SAME bucket size the chart draws: quantiles of raw one-minute samples are much
+  wider than quantiles of five-minute averages, and the wider band behind the
+  narrower line makes an ordinary day look becalmed. The stress `stateStrip` (on Today) marks
   off-wrist hours as unknown, never calm. `overlayChart` positions every point by
   REAL TIME against each series' own origin — its two curves can be sparse and
   differently bucketed, so index alignment would pair different clock times; its
