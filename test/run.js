@@ -1186,6 +1186,22 @@ test('records only exist with real values and each states its window', () => {
   assert.ok(rows.find((r) => r.id === 'load-day').window.includes('120'), 'bounded windows are labelled');
 });
 
+test('lifetime records rank whole-history days, best first, and drop what was never measured', () => {
+  const out = training.buildLifetimeRecords({
+    steps: [{ v: 100, t: 1 }, { v: 300, t: 2 }, { v: 200, t: 3 }, { v: 250, t: 4 }],
+    strainLoads: [{ v: 700, t: 5 }, { v: 0, t: 6 }],
+    totalCalories: [],
+  });
+  const steps = out.rows.find((r) => r.id === 'steps-day');
+  assert.deepStrictEqual(steps.top.map((e) => e.value), [300, 250, 200], 'top 3, best first');
+  assert.strictEqual(steps.top[0].atMs, 2, 'each podium entry carries its day');
+  const strain = out.rows.find((r) => r.id === 'strain-day');
+  assert.strictEqual(strain.top.length, 1, 'a measured-zero day cannot make a podium');
+  assert.strictEqual(strain.top[0].value, training.strainOf(700), 'strain podiums present the bounded value');
+  assert.ok(!out.rows.find((r) => r.id === 'total-calories-day'), 'an unmeasured metric says nothing');
+  assert.strictEqual(out.window, 'all-time');
+});
+
 test('the muscular index is bounded and separate from cardio load', () => {
   assert.strictEqual(training.muscularIndex(0), 0);
   assert.strictEqual(training.muscularIndex(null), 0);

@@ -898,6 +898,31 @@ function renderYou(d) {
   q.appendChild(qRows);
   main.appendChild(q);
 
+  // Lifetime records — top-3 podium per metric, whole history.
+  const lr = card('Lifetime records', 'Your top 3 days ever, per metric');
+  if (!d.lifetimeRecords || !d.lifetimeRecords.rows.length) {
+    lr.appendChild(el('p', 'Records appear once there is daily history to rank.', 'empty-state'));
+  } else {
+    const lrList = el('div', null, 'record-list');
+    for (const r of d.lifetimeRecords.rows) {
+      const row = el('div', null, 'podium-row');
+      row.appendChild(el('span', r.label, 'label'));
+      const podium = el('div', null, 'podium');
+      r.top.forEach((e2, i) => {
+        const entry = el('span', null, 'podium-entry');
+        entry.append(el('i', String(i + 1)),
+          el('b', `${fmtNumber(e2.value, r.precision)}${r.unit ? ` ${r.unit}` : ''}`),
+          el('span', new Date(e2.atMs + tzMs()).toISOString().slice(0, 10), 'window'));
+        podium.appendChild(entry);
+      });
+      row.appendChild(podium);
+      lrList.appendChild(row);
+    }
+    lr.appendChild(lrList);
+    methodNote(lr, d.lifetimeRecords);
+  }
+  main.appendChild(lr);
+
   // Badges.
   const bd = card('Milestones', `${d.badges.earnedCount} earned · lifetime totals from the whole history`);
   for (const b of d.badges.badges) {
