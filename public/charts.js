@@ -312,8 +312,10 @@ export function lineChart(host, spec, height = 220) {
   const showBand = spec.band && pts.some((p) => has(p.lo) && p.hi !== p.lo);
   const lows = showBand ? pts.map((p) => p.lo).filter(has) : [];
   const highs = showBand ? pts.map((p) => p.hi).filter(has) : [];
-  const min = Math.min(...values, ...lows, ...(spec.goal ? [spec.goal] : []));
-  const max = Math.max(...values, ...highs, ...(spec.goal ? [spec.goal] : []));
+  const ref = spec.refBand && has(spec.refBand.p10) && has(spec.refBand.p90)
+    ? [spec.refBand.p10, spec.refBand.p90] : [];
+  const min = Math.min(...values, ...lows, ...ref, ...(spec.goal ? [spec.goal] : []));
+  const max = Math.max(...values, ...highs, ...ref, ...(spec.goal ? [spec.goal] : []));
   const { ticks, lo, hi } = yTicks(min, max);
 
   const xOf = (i) => PAD.left + (pts.length === 1 ? spec0(width) : (i / (pts.length - 1)) * (width - PAD.left - PAD.right));
@@ -322,6 +324,25 @@ export function lineChart(host, spec, height = 220) {
   drawGrid(svg, t, ticks, yOf, width, spec.precision);
 
   const color = spec.color || t.series[0];
+
+  // The personal-range layer: your own p10–p90 shaded behind the line with the
+  // median as a hairline. This is the shared visual language for "is this normal
+  // FOR ME" — the value is only meaningful relative to it.
+  if (ref.length) {
+    svg.appendChild(el('rect', {
+      x: PAD.left, y: yOf(spec.refBand.p90),
+      width: width - PAD.left - PAD.right,
+      height: Math.max(1, yOf(spec.refBand.p10) - yOf(spec.refBand.p90)),
+      fill: color, 'fill-opacity': 0.07,
+    }));
+    if (has(spec.refBand.median)) {
+      svg.appendChild(el('line', {
+        x1: PAD.left, x2: width - PAD.right,
+        y1: yOf(spec.refBand.median), y2: yOf(spec.refBand.median),
+        stroke: color, 'stroke-width': 1, 'stroke-opacity': 0.35, 'shape-rendering': 'crispEdges',
+      }));
+    }
+  }
 
   // The min–max band: on a bucketed average this is the range inside each bucket,
   // and without it an "average heart rate of 71" hides a 48–160 day. Drawn per
@@ -892,6 +913,341 @@ export function hypnogram(host, timeline, opts = {}) {
   const c = document.createElement('span'); c.textContent = clock(to);
   axis.append(a, b, c);
   host.appendChild(axis);
+}
+
+// --- score ring (readiness, sleep score) -------------------------------------
+
+/**
+ * One bounded score as a ring. The arc is the only place the semantic colour
+ * appears — the numeral stays in text ink, per the "text never wears the series
+ * colour" rule. `spec: {value, max, label, sublabel, color, size}`.
+ */
+export function ringGauge(host, spec) {
+  host.replaceChildren();
+  const t = tokens();
+  const size = spec.size || 148;
+  const r = size / 2 - 10;
+  const c = size / 2;
+  const svg = el('svg', { width: size, height: size, viewBox: `0 0 ${size} ${size}`, role: 'img' });
+  svg.appendChild(el('circle', { cx: c, cy: c, r, fill: 'none', stroke: t.grid, 'stroke-width': 9 }));
+  if (spec.value !== null && spec.value !== undefined) {
+    const frac = Math.max(0.004, Math.min(1, spec.value / (spec.max || 100)));
+    const a0 = -Math.PI / 2;
+    const a1 = a0 + Math.PI * 2 * Math.min(0.9999, frac);
+    const large = (a1 - a0) > Math.PI ? 1 : 0;
+    const p = (a) => [c + r * Math.cos(a), c + r * Math.sin(a)];
+    const [x0, y0] = p(a0);
+    const [x1, y1] = p(a1);
+    svg.appendChild(el('path', {
+      d: `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1}`,
+      fill: 'none', stroke: spec.color || t.series[0], 'stroke-width': 9, 'stroke-linecap': 'round',
+      class: 'ring-arc',
+    }));
+  }
+  const num = el('text', {
+    x: c, y: c + (spec.sublabel ? 2 : 8), 'text-anchor': 'middle',
+    fill: t.text, class: 'ring-num',
+  });
+  num.textContent = spec.value === null || spec.value === undefined ? '—' : String(spec.value);
+  svg.appendChild(num);
+  if (spec.sublabel) {
+    const sub = el('text', { x: c, y: c + 22, 'text-anchor': 'middle', fill: t.muted, 'font-size': 10, class: 'ring-sub' });
+    sub.textContent = spec.sublabel;
+    svg.appendChild(sub);
+  }
+  host.appendChild(svg);
+}
+
+// --- half-dial arc (strain vs target, battery, countdown) --------------------
+
+/** `spec: {value, max, label, band:{lo,hi}, color, format}` — a half dial with an
+ * optional target band shaded on the track. */
+export function arcGauge(host, spec) {
+  host.replaceChildren();
+  const t = tokens();
+  const w = spec.size || 130;
+  const h = w * 0.62;
+  const c = w / 2;
+  const cy = h - 8;
+  const r = w / 2 - 12;
+  const svg = el('svg', { width: w, height: h, viewBox: `0 0 ${w} ${h}`, role: 'img' });
+  const at = (frac) => Math.PI + Math.PI * Math.max(0, Math.min(1, frac));
+  const arc = (f0, f1, stroke, width, cap = 'butt') => {
+    const a0 = at(f0);
+    const a1 = at(f1);
+    const p = (a) => [c + r * Math.cos(a), cy + r * Math.sin(a)];
+    const [x0, y0] = p(a0);
+    const [x1, y1] = p(a1);
+    return el('path', {
+      d: `M ${x0} ${y0} A ${r} ${r} 0 0 1 ${x1} ${y1}`,
+      fill: 'none', stroke, 'stroke-width': width, 'stroke-linecap': cap,
+    });
+  };
+  svg.appendChild(arc(0, 1, t.grid, 7));
+  const max = spec.max || 100;
+  if (spec.band && spec.band.lo !== null) {
+    svg.appendChild(arc(spec.band.lo / max, spec.band.hi / max, t.deemph, 7));
+  }
+  if (spec.value !== null && spec.value !== undefined) {
+    svg.appendChild(arc(0, spec.value / max, spec.color || t.series[0], 7, 'round'));
+  }
+  const num = el('text', { x: c, y: cy - 8, 'text-anchor': 'middle', fill: t.text, class: 'arc-num' });
+  num.textContent = spec.value === null || spec.value === undefined ? '—'
+    : (spec.format ? spec.format(spec.value) : String(spec.value));
+  svg.appendChild(num);
+  const lab = el('text', { x: c, y: cy + 6, 'text-anchor': 'middle', fill: t.muted, 'font-size': 9, class: 'arc-label' });
+  lab.textContent = spec.label || '';
+  svg.appendChild(lab);
+  host.appendChild(svg);
+}
+
+// --- three concentric rings (Move / Train / Recover) -------------------------
+
+export function ringTrio(host, rings) {
+  host.replaceChildren();
+  const t = tokens();
+  const size = 128;
+  const c = size / 2;
+  const svg = el('svg', { width: size, height: size, viewBox: `0 0 ${size} ${size}`, role: 'img' });
+  rings.forEach((ring, i) => {
+    const r = c - 10 - i * 17;
+    svg.appendChild(el('circle', { cx: c, cy: c, r, fill: 'none', stroke: t.grid, 'stroke-width': 12 }));
+    if (ring.fraction === null) return;
+    const frac = Math.max(0.005, Math.min(0.9999, ring.fraction));
+    const a0 = -Math.PI / 2;
+    const a1 = a0 + Math.PI * 2 * frac;
+    const p = (a) => [c + r * Math.cos(a), c + r * Math.sin(a)];
+    const [x0, y0] = p(a0);
+    const [x1, y1] = p(a1);
+    svg.appendChild(el('path', {
+      d: `M ${x0} ${y0} A ${r} ${r} 0 ${(a1 - a0) > Math.PI ? 1 : 0} 1 ${x1} ${y1}`,
+      fill: 'none', stroke: ring.color, 'stroke-width': 12, 'stroke-linecap': 'round',
+    }));
+  });
+  host.appendChild(svg);
+}
+
+// --- load corridor (band + the 7-day-load line threading it) -----------------
+
+/** `spec: {series:[{t,lo,hi,fatigue}], bucketMs}` — the healthy-load corridor. */
+export function corridorChart(host, spec, height = 200) {
+  const t = tokens();
+  const pts = spec.series.filter((d) => d.lo !== null || d.fatigue !== null);
+  if (pts.length < 2) return empty(host, height);
+  const { svg, width, plotH } = frame(host, height);
+  const tip = makeTooltip(host);
+
+  const values = pts.flatMap((d) => [d.lo, d.hi, d.fatigue]).filter((v) => v !== null && Number.isFinite(v));
+  const { ticks, lo, hi } = yTicks(0, Math.max(...values), 4, true);
+  const n = pts.length;
+  const xOf = (i) => PAD.left + (n === 1 ? spec0(width) : (i / (n - 1)) * (width - PAD.left - PAD.right));
+  const yOf = (v) => PAD.top + plotH - ((v - lo) / (hi - lo || 1)) * plotH;
+  drawGrid(svg, t, ticks, yOf, width, 0);
+
+  const good = getComputedStyle(document.documentElement).getPropertyValue('--good').trim();
+  const bandIdx = pts.map((d, i) => (d.lo !== null ? i : null)).filter((i) => i !== null);
+  if (bandIdx.length > 1) {
+    const up = bandIdx.map((i, k) => `${k ? 'L' : 'M'}${xOf(i)},${yOf(pts[i].hi)}`).join('');
+    const down = bandIdx.slice().reverse().map((i) => `L${xOf(i)},${yOf(pts[i].lo)}`).join('');
+    svg.appendChild(el('path', { d: `${up}${down}Z`, fill: good, 'fill-opacity': 0.14, stroke: 'none' }));
+    for (const edge of ['lo', 'hi']) {
+      svg.appendChild(el('path', {
+        d: bandIdx.map((i, k) => `${k ? 'L' : 'M'}${xOf(i)},${yOf(pts[i][edge])}`).join(''),
+        fill: 'none', stroke: good, 'stroke-width': 1, 'stroke-opacity': 0.5,
+      }));
+    }
+  }
+  const fatSegs = segments(pts, (p) => p.fatigue);
+  for (const seg of fatSegs) {
+    if (seg.length < 2) continue;
+    svg.appendChild(el('path', {
+      d: seg.map((i, k) => `${k ? 'L' : 'M'}${xOf(i)},${yOf(pts[i].fatigue)}`).join(''),
+      fill: 'none', stroke: t.text, 'stroke-width': 2, 'stroke-dasharray': '1 5',
+      'stroke-linecap': 'round',
+    }));
+  }
+  const lastI = fatSegs.length ? fatSegs[fatSegs.length - 1].slice(-1)[0] : null;
+  if (lastI !== null) {
+    svg.appendChild(el('circle', {
+      cx: xOf(lastI), cy: yOf(pts[lastI].fatigue), r: 4.5,
+      fill: t.text, stroke: t.surface, 'stroke-width': 2,
+    }));
+  }
+  drawXAxis(svg, t, pts, xOf, spec.bucketMs || 86400000, plotH);
+
+  const overlay = el('rect', {
+    x: PAD.left, y: PAD.top, width: Math.max(1, width - PAD.left - PAD.right), height: plotH,
+    fill: 'transparent', style: 'cursor:crosshair',
+  });
+  svg.appendChild(overlay);
+  overlay.addEventListener('pointermove', (e) => {
+    const rect = svg.getBoundingClientRect();
+    const rel = ((e.clientX - rect.left) / rect.width) * width;
+    const i = Math.max(0, Math.min(n - 1, Math.round(((rel - PAD.left) / Math.max(1, width - PAD.left - PAD.right)) * (n - 1))));
+    const d = pts[i];
+    const rows = [];
+    if (d.fatigue !== null) rows.push({ color: t.text, value: fmtNumber(d.fatigue, 0), label: '7-day load' });
+    if (d.lo !== null) rows.push({ color: good, value: `${fmtNumber(d.lo, 0)}–${fmtNumber(d.hi, 0)}`, label: 'healthy corridor' });
+    tip.show((xOf(i) / width) * rect.width, PAD.top + 10, rows, fmtTimeFull(d.t, 86400000));
+  });
+  overlay.addEventListener('pointerleave', () => tip.hide());
+  return { redraw: () => corridorChart(host, spec, height) };
+}
+
+// --- day overlay (compare: two days of the SAME metric on one axis) ----------
+
+/**
+ * `a`/`b`: {label, points:[{t,v}]}; `band`: optional typical p25–p75 per point of
+ * b. Same unit on both sides, so this is one real axis, not an indexed trick;
+ * the ghost wears a dash because it is a reference, not a measurement of today.
+ */
+export function overlayChart(host, spec, height = 230) {
+  const t = tokens();
+  const aPts = spec.a.points;
+  const bPts = spec.b ? spec.b.points : [];
+  const n = Math.max(aPts.length, bPts.length);
+  if (!n || !aPts.some((p) => p.v !== null)) return empty(host, height);
+  const { svg, width, plotH } = frame(host, height);
+  const tip = makeTooltip(host);
+
+  const all = [...aPts, ...bPts].flatMap((p) => [p.v, p.p25, p.p75])
+    .filter((v) => v !== null && v !== undefined && Number.isFinite(v));
+  const { ticks, lo, hi } = yTicks(Math.min(...all), Math.max(...all), 4, spec.nonNegative !== false);
+  const xOf = (i) => PAD.left + (n === 1 ? spec0(width) : (i / (n - 1)) * (width - PAD.left - PAD.right));
+  const yOf = (v) => PAD.top + plotH - ((v - lo) / (hi - lo || 1)) * plotH;
+  drawGrid(svg, t, ticks, yOf, width, spec.precision || 0);
+
+  const ghost = t.secondary;
+  if (bPts.some((p) => p.p25 !== null && p.p25 !== undefined)) {
+    const idx = bPts.map((p, i) => (p.p25 !== null && p.p25 !== undefined && p.p75 !== null ? i : null)).filter((i) => i !== null);
+    if (idx.length > 1) {
+      const up = idx.map((i, k) => `${k ? 'L' : 'M'}${xOf(i)},${yOf(bPts[i].p75)}`).join('');
+      const down = idx.slice().reverse().map((i) => `L${xOf(i)},${yOf(bPts[i].p25)}`).join('');
+      svg.appendChild(el('path', { d: `${up}${down}Z`, fill: ghost, 'fill-opacity': 0.1, stroke: 'none' }));
+    }
+  }
+  for (const seg of segments(bPts, (p) => p.v)) {
+    if (seg.length < 2) continue;
+    svg.appendChild(el('path', {
+      d: seg.map((i, k) => `${k ? 'L' : 'M'}${xOf(i)},${yOf(bPts[i].v)}`).join(''),
+      fill: 'none', stroke: ghost, 'stroke-width': 1.5, 'stroke-dasharray': '4 4', 'stroke-opacity': 0.85,
+    }));
+  }
+  const aColor = spec.color || t.series[0];
+  for (const seg of segments(aPts, (p) => p.v)) {
+    if (seg.length < 2) {
+      if (seg.length === 1) {
+        svg.appendChild(el('circle', {
+          cx: xOf(seg[0]), cy: yOf(aPts[seg[0]].v), r: 3, fill: aColor, stroke: t.surface, 'stroke-width': 2,
+        }));
+      }
+      continue;
+    }
+    svg.appendChild(el('path', {
+      d: seg.map((i, k) => `${k ? 'L' : 'M'}${xOf(i)},${yOf(aPts[i].v)}`).join(''),
+      fill: 'none', stroke: aColor, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+    }));
+  }
+  drawXAxis(svg, t, (aPts.length >= bPts.length ? aPts : bPts), xOf, spec.bucketMs, plotH);
+
+  const overlay = el('rect', {
+    x: PAD.left, y: PAD.top, width: Math.max(1, width - PAD.left - PAD.right), height: plotH,
+    fill: 'transparent', style: 'cursor:crosshair',
+  });
+  svg.appendChild(overlay);
+  overlay.addEventListener('pointermove', (e) => {
+    const rect = svg.getBoundingClientRect();
+    const rel = ((e.clientX - rect.left) / rect.width) * width;
+    const i = Math.max(0, Math.min(n - 1, Math.round(((rel - PAD.left) / Math.max(1, width - PAD.left - PAD.right)) * (n - 1))));
+    const rows = [];
+    const av = aPts[i] ? aPts[i].v : null;
+    const bv = bPts[i] ? bPts[i].v : null;
+    rows.push({ color: aColor, value: av === null ? '—' : `${fmtNumber(av, spec.precision || 0)} ${spec.unit}`, label: spec.a.label });
+    if (spec.b) rows.push({ color: ghost, value: bv === null || bv === undefined ? '—' : `${fmtNumber(bv, spec.precision || 0)} ${spec.unit}`, label: spec.b.label });
+    const at = (aPts[i] || bPts[i] || {}).t;
+    tip.show((xOf(i) / width) * rect.width, PAD.top + 10, rows, at ? fmtTimeFull(at, spec.bucketMs) : '');
+  });
+  overlay.addEventListener('pointerleave', () => tip.hide());
+  return { redraw: () => overlayChart(host, spec, height) };
+}
+
+// --- heat calendar -----------------------------------------------------------
+
+/**
+ * Weeks × weekdays, single-hue sequential cells (magnitude, one metric — identity
+ * lives in the card title). Unmeasured days stay the empty surface: "not tracked"
+ * must not look like "did nothing". Cells are buttons — every one is a door to
+ * that day.
+ */
+export function heatCalendar(host, spec, onPick) {
+  host.replaceChildren();
+  const t = tokens();
+  const wrap = document.createElement('div');
+  wrap.className = 'heatcal';
+  const colOf = (v) => {
+    if (v === null || v === undefined || !Number.isFinite(v)) return null;
+    const th = spec.thresholds || [];
+    let step = 0;
+    for (const x of th) { if (x !== null && v > x) step++; }
+    return t.ordinal[Math.min(1 + step, t.ordinal.length - 1)];
+  };
+  const firstDow = (new Date(spec.cells[0].t + (spec.offsetMs || 0)).getUTCDay() + 6) % 7;
+  for (let i = 0; i < firstDow; i++) {
+    wrap.appendChild(document.createElement('span'));
+  }
+  for (const cell of spec.cells) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'heatcell';
+    const color = colOf(cell.v);
+    if (color) b.style.background = color;
+    else b.classList.add('empty');
+    const d = new Date(cell.t + (spec.offsetMs || 0));
+    b.title = `${d.toISOString().slice(0, 10)} — ${cell.v === null ? 'not tracked' : `${fmtNumber(cell.v, spec.precision || 0)} ${spec.unit || ''}`}`;
+    b.setAttribute('aria-label', b.title);
+    if (onPick) b.addEventListener('click', () => onPick(d.toISOString().slice(0, 10)));
+    wrap.appendChild(b);
+  }
+  host.appendChild(wrap);
+}
+
+// --- stress / state strip ----------------------------------------------------
+
+/** One coloured block per hour. Ordered intensity takes the ordinal ramp; special
+ * states (active, restorative, unknown) are structural, not on the ramp. */
+export function stateStrip(host, points, opts = {}) {
+  host.replaceChildren();
+  const t = tokens();
+  const colors = {
+    calm: t.ordinal[1], elevated: t.ordinal[3], high: t.ordinal[5],
+    restorative: t.ordinal[0], active: t.deemph,
+  };
+  const strip = document.createElement('div');
+  strip.className = 'state-strip';
+  for (const p of points) {
+    const cell = document.createElement('span');
+    cell.className = `state-cell${p.state === null ? ' unknown' : ''}${p.state === 'active' ? ' active' : ''}`;
+    if (p.state && colors[p.state]) cell.style.background = colors[p.state];
+    const time = new Date(p.t).toLocaleTimeString([], { hour: 'numeric' });
+    cell.title = p.state === null ? `${time} — not tracked`
+      : `${time} — ${p.state}${p.avgHr ? ` · ${p.avgHr} bpm` : ''}`;
+    strip.appendChild(cell);
+  }
+  host.appendChild(strip);
+  if (opts.legend !== false) {
+    const legend = document.createElement('div');
+    legend.className = 'legend';
+    for (const [key, label] of [['calm', 'Calm'], ['elevated', 'Elevated'], ['high', 'High'], ['active', 'Activity'], ['restorative', 'Nap']]) {
+      const item = document.createElement('span');
+      item.className = 'legend-item';
+      const sw = document.createElement('span');
+      sw.className = 'legend-swatch';
+      sw.style.background = colors[key];
+      item.append(sw, document.createTextNode(label));
+      legend.appendChild(item);
+    }
+    host.appendChild(legend);
+  }
 }
 
 export { tokens, fmtNumber, fmtTimeFull };

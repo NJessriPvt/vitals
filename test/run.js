@@ -44,6 +44,13 @@ const views = require('../lib/views');
 const metrics = require('../lib/metrics');
 const insights = require('../lib/insights');
 const demo = require('../lib/demo');
+const stats = require('../lib/stats');
+const nightlib = require('../lib/night');
+const scores = require('../lib/scores');
+const training = require('../lib/training');
+const trends = require('../lib/trends');
+const goals = require('../lib/goals');
+const screens = require('../lib/screens');
 
 let passed = 0;
 const failures = [];
@@ -62,7 +69,7 @@ const asyncTests = [];
 function testAsync(name, fn) { asyncTests.push([name, fn]); }
 
 // Async tests that need a live database; skipped when none is reachable.
-const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period", "overview reports sleep in hours, not scaled twice", "zone bands come from 220 - age and cover the range", "activity calories use the database interval rows", "fitness age integrates recent database trends"]);
+const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period", "overview reports sleep in hours, not scaled twice", "zone bands come from 220 - age and cover the range", "activity calories use the database interval rows", "fitness age integrates recent database trends", "strength log validates, stores and deletes entries", "screen payloads survive an empty database", "daily load prefers device zone minutes and marks rest days zero"]);
 
 // ---------------------------------------------------------------------------
 // catalog — the filter field is per record type and a wrong one is a 400
@@ -806,6 +813,540 @@ test('demo point ids stay unique across adjacent days', () => {
     const names = points.map((point) => point.name);
     assert.strictEqual(new Set(names).size, names.length, `${typeId} has colliding demo ids`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// scores — readiness, strain, battery, stress: bounded and honest about absence
+// ---------------------------------------------------------------------------
+
+const neutralReadiness = (overrides = {}) => ({
+  hrv: { current: 50, baseline: 50, baselineCount: 20 },
+  restingHeartRate: { current: 58, baseline: 58, baselineCount: 20 },
+  sleep: { hours: 7.2, needHours: 8 },
+  debtHours: 0,
+  temperature: { deviation: 0 },
+  respiratoryRate: { current: 14, baseline: 14, baselineCount: 20 },
+  yesterdayStrain: { value: 10, typical: 10 },
+  ...overrides,
+});
+
+test('an ordinary morning reads as an ordinary readiness', () => {
+  const r = scores.buildReadiness(neutralReadiness());
+  assert.ok(r.score >= 55 && r.score <= 70, `neutral inputs should land in the 60s, got ${r.score}`);
+  assert.strictEqual(r.band, 'moderate');
+});
+
+test('readiness moves with the body, in both directions, bounded', () => {
+  const high = scores.buildReadiness(neutralReadiness({
+    hrv: { current: 60, baseline: 50, baselineCount: 20 },
+    restingHeartRate: { current: 54, baseline: 58, baselineCount: 20 },
+    sleep: { hours: 8.4, needHours: 8 },
+  }));
+  assert.strictEqual(high.band, 'high');
+
+  const low = scores.buildReadiness(neutralReadiness({
+    hrv: { current: 36, baseline: 50, baselineCount: 20 },
+    restingHeartRate: { current: 66, baseline: 58, baselineCount: 20 },
+    sleep: { hours: 5.1, needHours: 8 },
+    debtHours: 6,
+    temperature: { deviation: 0.8 },
+  }));
+  assert.strictEqual(low.band, 'low');
+  assert.ok(low.score >= 0, 'the floor is 0, never negative');
+
+  const absurd = scores.buildReadiness(neutralReadiness({
+    hrv: { current: 500, baseline: 50, baselineCount: 20 },
+    restingHeartRate: { current: 20, baseline: 58, baselineCount: 20 },
+    sleep: { hours: 14, needHours: 8 },
+  }));
+  assert.ok(absurd.score <= 100, 'the ceiling is 100');
+});
+
+test('a missing input lowers coverage, never the score', () => {
+  const withHrv = scores.buildReadiness(neutralReadiness());
+  const withoutHrv = scores.buildReadiness(neutralReadiness({
+    hrv: { current: null, baseline: null, baselineCount: 0 },
+  }));
+  assert.strictEqual(withHrv.score, withoutHrv.score,
+    'losing a NEUTRAL signal must not move the number');
+  const c = withoutHrv.contributors.find((x) => x.id === 'hrv');
+  assert.strictEqual(c.status, 'unavailable');
+  assert.strictEqual(c.points, null, 'unavailable is null, not zero');
+});
+
+test('readiness refuses to exist on one core signal', () => {
+  const r = scores.buildReadiness({
+    sleep: { hours: 7, needHours: 8 },
+  });
+  assert.strictEqual(r.score, null);
+  assert.strictEqual(r.band, 'calibrating');
+});
+
+test('strain saturates: the top of the scale costs exponentially more', () => {
+  assert.strictEqual(training.strainOf(null), null);
+  assert.strictEqual(training.strainOf(0), 0);
+  const low = training.strainOf(150);
+  const mid = training.strainOf(350);
+  const high = training.strainOf(700);
+  assert.ok(low < mid && mid < high, 'monotonic');
+  assert.ok((mid - low) > (high - mid), 'each step up buys less');
+  assert.ok(training.strainOf(100000) <= 21, 'bounded at 21');
+  const target = scores.strainTarget(80);
+  assert.ok(target.lo > scores.strainTarget(30).hi - 1, 'a ready day earns a higher band than a wrecked one');
+  assert.strictEqual(scores.strainTarget(null), null);
+});
+
+test('the stress timeline never mistakes absence or exertion for calm', () => {
+  const HOUR = 3600000;
+  const hours = [
+    { t: 0, avgHr: 60 },        // calm
+    { t: HOUR, avgHr: null },   // off wrist
+    { t: 2 * HOUR, avgHr: 130 }, // during a session -> active
+    { t: 3 * HOUR, avgHr: 120 }, // high (>= zone3)
+    { t: 4 * HOUR, avgHr: 74 },  // elevated (rhr + 12)
+  ];
+  const s = scores.buildStressTimeline({
+    hours, restingHr: 58, zone3Bpm: 114,
+    sessionRanges: [{ start: 2 * HOUR, end: 3 * HOUR }],
+  });
+  assert.deepStrictEqual(s.points.map((p) => p.state),
+    ['calm', null, 'active', 'high', 'elevated']);
+  assert.strictEqual(s.trackedHours, 4, 'the off-wrist hour is untracked, not calm');
+});
+
+test('the battery stays inside 5–100 and drains harder on stressed hours', () => {
+  const HOUR = 3600000;
+  const mk = (state) => scores.buildBattery({
+    wakeMs: 7 * HOUR,
+    sleepRatio: 1,
+    efficiencyPercent: 92,
+    stress: { points: Array.from({ length: 24 }, (_, h) => ({ t: h * HOUR, state: h >= 8 ? state : null })) },
+    hourLoads: [],
+    nowMs: 24 * HOUR,
+    dayStart: 0,
+  });
+  const calm = mk('calm');
+  const stressed = mk('high');
+  assert.ok(calm.points.every((p) => p.v >= 5 && p.v <= 100));
+  assert.ok(stressed.current < calm.current, 'a stressed afternoon costs more than a calm one');
+  const noSleep = scores.buildBattery({
+    wakeMs: null, sleepRatio: null, efficiencyPercent: null,
+    stress: { points: [] }, hourLoads: [], nowMs: 12 * HOUR, dayStart: 0,
+  });
+  assert.strictEqual(noSleep.points[0].v, 55, 'no sleep data starts at the stated default, not zero');
+});
+
+test('weekly intensity caps a heroic day and counts only measured days', () => {
+  const DAY = 86400000;
+  const days = [500, 0, null, 20, 40, 0, 900].map((load, i) => ({ t: i * DAY, load }));
+  const w = scores.buildWeeklyIntensity(days);
+  const capped = w.days.filter((d) => d.points === 35).length;
+  assert.strictEqual(capped, 2, 'both huge days hit the 35-point cap');
+  assert.strictEqual(w.measuredDays, 6);
+  assert.strictEqual(w.total, 35 + 0 + 5 + 10 + 0 + 35);
+});
+
+test('resilience needs coverage and moves by whole levels', () => {
+  assert.strictEqual(scores.buildResilience({ coveredDays: 6 }).level, null);
+  const strong = scores.buildResilience({
+    stressShareAvg: 0.05, sleepRatioAvg: 1.02, hrvTrendPercent: 6, coveredDays: 14,
+  });
+  assert.strictEqual(strong.level, 'Exceptional');
+  const worn = scores.buildResilience({
+    stressShareAvg: 0.3, sleepRatioAvg: 0.7, hrvTrendPercent: -8, coveredDays: 14,
+  });
+  assert.strictEqual(worn.level, 'Limited');
+  const unknownStress = scores.buildResilience({
+    stressShareAvg: null, sleepRatioAvg: 1, hrvTrendPercent: 0, coveredDays: 12,
+  });
+  assert.strictEqual(unknownStress.level, 'Solid', 'unknown stress contributes nothing either way');
+});
+
+test('the symptom radar fires on joint deviation, never on one signal', () => {
+  const band = { p10: 40, p90: 60, median: 50 };
+  const sig = (id, current, direction = 'high-bad') => ({
+    id, label: id, unit: '', current, band, direction,
+  });
+  const one = scores.buildSymptomRadar([
+    sig('a', 75), sig('b', 50), sig('c', 50), sig('d', 50),
+  ]);
+  assert.strictEqual(one.level, 'none', 'one outlier is a shrug');
+  const two = scores.buildSymptomRadar([
+    sig('a', 75), sig('b', 75), sig('c', 50), sig('d', 50),
+  ]);
+  assert.strictEqual(two.level, 'minor');
+  const three = scores.buildSymptomRadar([
+    sig('a', 75), sig('b', 75), sig('c', 30, 'low-bad'), sig('d', 50),
+  ]);
+  assert.strictEqual(three.level, 'major');
+  assert.ok(three.signals.find((s) => s.id === 'c').flagged, 'low-bad flags below p10');
+  const thin = scores.buildSymptomRadar([sig('a', 75), { id: 'b', label: 'b', unit: '', current: null, band: null }]);
+  assert.strictEqual(thin.level, 'unavailable', 'two measurable vitals are not enough to call it');
+});
+
+test('the energy forecast is bounded, needs a wake time, and debt deepens the dip', () => {
+  const HOUR = 3600000;
+  const none = scores.buildEnergyForecast({ wakeMs: null, dayStart: 0, nowMs: 0 });
+  assert.strictEqual(none.available, false);
+  const fresh = scores.buildEnergyForecast({ wakeMs: 7 * HOUR, needHours: 8, debtHours: 0, dayStart: 0, nowMs: 0 });
+  const tired = scores.buildEnergyForecast({ wakeMs: 7 * HOUR, needHours: 8, debtHours: 8, dayStart: 0, nowMs: 0 });
+  assert.ok(fresh.points.every((p) => p.v >= 5 && p.v <= 100));
+  assert.ok(tired.zones.dip.v < fresh.zones.dip.v, 'sleep debt deepens the afternoon dip');
+  assert.strictEqual(fresh.zones.bedTarget, 7 * HOUR + 16 * HOUR, 'bed target = wake + (24 − need)');
+});
+
+// ---------------------------------------------------------------------------
+// night — need, debt, consistency, naps
+// ---------------------------------------------------------------------------
+
+test('sleep need is learned from history and debt decays, half-credits and caps', () => {
+  const steady = nightlib.buildSleepNeed(Array(28).fill(8));
+  assert.strictEqual(steady.baseNeedHours, 8);
+  assert.strictEqual(steady.debtHours, 0);
+
+  const short = nightlib.buildSleepNeed([...Array(21).fill(8), ...Array(7).fill(5.5)]);
+  assert.ok(short.debtHours > 5, `a week of 5.5s owes real hours, got ${short.debtHours}`);
+  assert.ok(short.tonightNeedHours > short.baseNeedHours, 'debt raises tonight');
+
+  const repaid = nightlib.buildSleepNeed([...Array(21).fill(8), ...Array(4).fill(5.5), 10, 10, 10]);
+  assert.ok(repaid.debtHours < short.debtHours, 'long nights repay');
+  const bank = nightlib.buildSleepNeed([...Array(21).fill(8), 12, 12, 12, 12, 12, 12, 12]);
+  assert.strictEqual(bank.debtHours, 0, 'debt floors at zero — sleep cannot be banked');
+
+  const chronic = nightlib.buildSleepNeed(Array(28).fill(3.5));
+  assert.strictEqual(chronic.baseNeedHours, null, 'sub-4h nights are tracking noise, not a need');
+
+  const young = nightlib.buildSleepNeed([8, 8, 8]);
+  assert.strictEqual(young.baseNeedHours, null, 'needs a week of nights first');
+
+  const strained = nightlib.buildSleepNeed(Array(28).fill(8), { yesterdayStrain: 16 });
+  assert.ok(strained.tonightNeedHours > 8, 'a hard day raises tonight’s need');
+});
+
+test('consistency survives midnight: 23:40 and 00:20 are forty minutes apart', () => {
+  assert.strictEqual(
+    Math.abs(stats.minutesFrom6pm(Date.UTC(2026, 5, 2, 0, 20)) - stats.minutesFrom6pm(Date.UTC(2026, 5, 1, 23, 40))),
+    40,
+  );
+  const H = 3600000;
+  const night = (bedH, bedM = 0) => {
+    const start = Date.UTC(2026, 5, 1, bedH, bedM);
+    return { start, end: start + 8 * H };
+  };
+  const tight = nightlib.buildConsistency([night(23), night(23, 10), night(22, 55), night(23, 5), night(23)], 0);
+  assert.strictEqual(tight.score, 100, '≤15 min of spread is a perfect score');
+  const loose = nightlib.buildConsistency([night(21), night(23, 30), night(1), night(22), night(2)], 0);
+  assert.ok(loose.score < tight.score);
+  assert.strictEqual(nightlib.buildConsistency([night(23), night(23)], 0).score, null, 'two nights is not a pattern');
+});
+
+test('naps split from the main night and credit debt at half rate', () => {
+  const H = 3600000;
+  const dayStart = Date.UTC(2026, 5, 2);
+  const main = { start: dayStart - 8 * H, end: dayStart - 0.5 * H };
+  const nap = { start: dayStart + 14 * H, end: dayStart + 15 * H };
+  const long = { start: dayStart + 9 * H, end: dayStart + 13 * H }; // 4h: not a nap
+  const split = nightlib.splitSessions([nap, main, long]);
+  assert.strictEqual(split.main.start, main.start, 'the longest session is the night');
+  assert.strictEqual(split.naps.length, 1, 'a four-hour daytime sleep is not filed as a nap');
+  assert.strictEqual(split.naps[0].debtCreditHours, 0.5, 'one hour napped repays half an hour');
+});
+
+test('the overnight dip needs real samples on both sides', () => {
+  const pts = (vals) => vals.map((v, i) => ({ t: i * 600000, v }));
+  assert.strictEqual(nightlib.buildHrDip(pts([60, 58]), 80).dipPercent, null, 'too few samples');
+  assert.strictEqual(nightlib.buildHrDip(pts([60, 58, 55, 54, 53, 52]), null).dipPercent, null, 'no daytime reference');
+  const ok = nightlib.buildHrDip(pts([60, 56, 52, 50, 49, 50, 52]), 76);
+  assert.ok(ok.dipPercent >= 25 && ok.dipPercent <= 35, `plausible dip, got ${ok.dipPercent}`);
+  assert.strictEqual(ok.bottomAtMs, 4 * 600000, 'bottom-out is the lowest sample’s time');
+});
+
+test('the month pattern waits for 14 nights and names the dominant deviation', () => {
+  const H = 3600000;
+  const mkRow = (i, hours) => {
+    const start = Date.UTC(2026, 5, 1 + i, 23) ;
+    return {
+      t: Date.UTC(2026, 5, 2 + i),
+      main: { start, end: start + hours * H },
+      naps: [],
+      hoursAsleep: hours,
+      efficiencyPercent: 92,
+      stageHours: { deep: hours * 0.18, rem: hours * 0.22, light: hours * 0.55, awake: hours * 0.05 },
+    };
+  };
+  const thin = nightlib.buildMonthPattern(Array.from({ length: 10 }, (_, i) => mkRow(i, 8)));
+  assert.strictEqual(thin.available, false);
+  const short = nightlib.buildMonthPattern(Array.from({ length: 20 }, (_, i) => mkRow(i, 5.8)));
+  assert.ok(short.sentence.includes('Short nights'), short.sentence);
+  const steady = nightlib.buildMonthPattern(Array.from({ length: 20 }, (_, i) => mkRow(i, 8)));
+  assert.ok(steady.metrics.every((m) => m.status !== 'below' || m.id === 'variability'),
+    'a steady month has no deviating metric');
+});
+
+// ---------------------------------------------------------------------------
+// training — the load model, corridor, countdown, merge, HRR
+// ---------------------------------------------------------------------------
+
+test('fitness rises slowly, fatigue fast, and the ratio names the state', () => {
+  const DAY = 86400000;
+  // The EWMAs seed at the first measured day, so an account that arrives already
+  // training does not begin in a fictional detraining ramp from zero.
+  const flat = Array.from({ length: 60 }, (_, i) => ({ t: i * DAY, load: 100 }));
+  const model = training.buildLoadModel(flat);
+  const last = model.series[model.series.length - 1];
+  assert.ok(Math.abs(last.fatigue - 100) < 5 && Math.abs(last.fitness - 100) < 5,
+    'a steady diet converges both averages onto it');
+  assert.strictEqual(model.current.status, 'maintaining');
+
+  const ramp = training.buildLoadModel([
+    ...Array.from({ length: 40 }, (_, i) => ({ t: i * DAY, load: 80 })),
+    ...Array.from({ length: 10 }, (_, i) => ({ t: (40 + i) * DAY, load: 110 })),
+  ]);
+  const rampLast = ramp.series[ramp.series.length - 1];
+  assert.ok(rampLast.fatigue > rampLast.fitness, 'on a ramp, fatigue outruns fitness');
+  assert.strictEqual(ramp.current.status, 'productive', 'a gentle ramp is productive, not alarming');
+
+  const spike = training.buildLoadModel([
+    ...Array.from({ length: 50 }, (_, i) => ({ t: i * DAY, load: 60 })),
+    ...Array.from({ length: 10 }, (_, i) => ({ t: (50 + i) * DAY, load: 400 })),
+  ]);
+  assert.strictEqual(spike.current.status, 'overreaching', 'a sudden 6× ramp is flagged');
+
+  const stopped = training.buildLoadModel([
+    ...Array.from({ length: 50 }, (_, i) => ({ t: i * DAY, load: 150 })),
+    ...Array.from({ length: 20 }, (_, i) => ({ t: (50 + i) * DAY, load: 0 })),
+  ]);
+  assert.strictEqual(stopped.current.status, 'detraining', 'three weeks of rest days reads as detraining');
+
+  const young = training.buildLoadModel(Array.from({ length: 10 }, (_, i) => ({ t: i * DAY, load: null })));
+  assert.strictEqual(young.current, null, 'pre-history stays unknown, not zero');
+});
+
+test('the corridor narrows for a run-down body and places the load line', () => {
+  const DAY = 86400000;
+  const loads = Array.from({ length: 60 }, (_, i) => ({ t: i * DAY, load: 100 }));
+  const model = training.buildLoadModel(loads);
+  const fresh = training.buildCorridor(model, { readinessAvg: 80 });
+  const worn = training.buildCorridor(model, { readinessAvg: 30 });
+  assert.strictEqual(fresh.upperFactor, 1.35);
+  assert.strictEqual(worn.upperFactor, 1.15);
+  assert.strictEqual(fresh.state, 'inside', 'steady training threads the corridor');
+
+  const rested = training.buildLoadModel([
+    ...Array.from({ length: 55 }, (_, i) => ({ t: i * DAY, load: 150 })),
+    ...Array.from({ length: 12 }, (_, i) => ({ t: (55 + i) * DAY, load: 0 })),
+  ]);
+  assert.strictEqual(training.buildCorridor(rested, {}).state, 'below');
+});
+
+test('the recovery countdown is bounded and stretches on a low-readiness morning', () => {
+  const now = Date.UTC(2026, 7, 20, 12);
+  const end = now - 2 * 3600000;
+  const light = training.buildRecoveryCountdown({ lastSession: { end, load: 10 }, nowMs: now });
+  assert.ok(light.baseHours >= 6, 'floor of six hours');
+  const heavy = training.buildRecoveryCountdown({ lastSession: { end, load: 100000 }, nowMs: now });
+  assert.ok(heavy.baseHours <= 72, 'ceiling of seventy-two');
+  const normal = training.buildRecoveryCountdown({ lastSession: { end, load: 200 }, readinessScore: 80, nowMs: now });
+  const wrecked = training.buildRecoveryCountdown({ lastSession: { end, load: 200 }, readinessScore: 30, nowMs: now });
+  assert.ok(wrecked.hoursRemaining > normal.hoursRemaining, 'low readiness stretches recovery');
+  assert.strictEqual(training.buildRecoveryCountdown({ lastSession: null, nowMs: now }).state, 'ready');
+});
+
+test('a detected session overlapping a recorded one is the same event, not two', () => {
+  const H = 3600000;
+  const recorded = [{ kind: 'recorded', start: 10 * H, end: 11 * H, load: 80 }];
+  const overlapping = { kind: 'detected', start: 10.2 * H, end: 11.2 * H, load: 75 };
+  const separate = { kind: 'detected', start: 18 * H, end: 18.7 * H, load: 40 };
+  const merged = training.mergeSessions(recorded, [overlapping, separate]);
+  assert.strictEqual(merged.length, 2);
+  assert.ok(!merged.includes(overlapping), 'the typed recording wins');
+  assert.ok(merged.includes(separate), 'a genuinely separate detection survives');
+});
+
+test('heart-rate recovery needs samples at the end and at +60s', () => {
+  const end = 1000000;
+  const good = training.buildHeartRateRecovery([
+    { t: end - 5000, v: 165 }, { t: end + 58000, v: 128 },
+  ], end);
+  assert.strictEqual(good.dropBpm, 37);
+  assert.strictEqual(training.buildHeartRateRecovery([{ t: end - 5000, v: 165 }], end), null,
+    'no +60s sample, no claim');
+  assert.strictEqual(training.buildHeartRateRecovery([
+    { t: end - 90000, v: 165 }, { t: end + 60000, v: 128 },
+  ], end), null, 'a stale peak sample is not the session end');
+});
+
+test('records only exist with real values and each states its window', () => {
+  const rows = training.buildRecords({
+    maxDaySteps: { v: 24812, t: 1 }, maxDayDistanceKm: null, maxDayAzm: { v: 0, t: 2 },
+    longestSessionMin: { v: 134, t: 3 }, maxDayLoad: { v: 420, t: 4 }, maxWeekLoad: null,
+    sessionCount: 88, maxDayFloors: null,
+  });
+  assert.ok(rows.every((r) => r.value !== null && r.value > 0), 'zero-value records are noise');
+  assert.ok(rows.find((r) => r.id === 'load-day').window.includes('120'), 'bounded windows are labelled');
+});
+
+test('the muscular index is bounded and separate from cardio load', () => {
+  assert.strictEqual(training.muscularIndex(0), 0);
+  assert.strictEqual(training.muscularIndex(null), 0);
+  assert.ok(training.muscularIndex(2000) > training.muscularIndex(500));
+  assert.ok(training.muscularIndex(1e9) <= 30);
+});
+
+// ---------------------------------------------------------------------------
+// trends — verdicts, highlights, correlations, reports
+// ---------------------------------------------------------------------------
+
+test('a verdict has a dead zone, so one odd week cannot flip an arrow', () => {
+  const base = { id: 'x', label: 'X', unit: '', precision: 0, upIsGood: true };
+  const flat = trends.buildVerdict({
+    ...base, recent: Array(60).fill(102), prior: Array(60).fill(100),
+  });
+  assert.strictEqual(flat.direction, 'flat', '2% is inside the dead zone');
+  const up = trends.buildVerdict({
+    ...base, recent: Array(60).fill(110), prior: Array(60).fill(100),
+  });
+  assert.strictEqual(up.direction, 'up');
+  assert.strictEqual(up.good, true);
+  const rhr = trends.buildVerdict({
+    ...base, upIsGood: false, recent: Array(60).fill(110), prior: Array(60).fill(100),
+  });
+  assert.strictEqual(rhr.good, false, 'up is not always good');
+  const thin = trends.buildVerdict({
+    ...base, recent: Array(5).fill(1), prior: Array(60).fill(1),
+  });
+  assert.strictEqual(thin.available, false, 'fourteen measured days or no verdict');
+});
+
+test('highlights cap at three and only fire on a window extreme', () => {
+  const win = (values) => ({ values, times: values.map((_, i) => i) });
+  const cards = trends.buildHighlights([
+    { id: 'a', ...win([...Array(59).fill(50), 90]), maxText: (v) => `max ${v}` },
+    { id: 'b', ...win([...Array(59).fill(50), 10]), minText: (v) => `min ${v}` },
+    { id: 'c', ...win([...Array(59).fill(50), 89]), maxText: (v) => `max ${v}` },
+    { id: 'd', ...win([...Array(59).fill(50), 91]), maxText: (v) => `max ${v}` },
+    { id: 'e', ...win([...Array(59).fill(50), 50]), maxText: (v) => `max ${v}` },
+  ]);
+  assert.ok(cards.length <= 3, 'an editor, not a firehose');
+  assert.ok(!cards.some((c) => c.metric === 'e'), 'an ordinary day is not a highlight');
+  const thin = trends.buildHighlights([{ id: 'a', ...win(Array(10).fill(5)), maxText: () => 'x' }]);
+  assert.strictEqual(thin.length, 0, 'under 21 days there is no window to be extreme in');
+});
+
+test('correlation cards demand n and r, and report the split in real units', () => {
+  const xs = [];
+  const ys = [];
+  for (let i = 0; i < 40; i++) { xs.push(6 + (i % 5)); ys.push(40 + (i % 5) * 3); }
+  const card = trends.buildCorrelation({ id: 't', xLabel: 'x', yLabel: 'y', unit: 'ms', xs, ys });
+  assert.ok(card, 'a strong association over 40 days yields a card');
+  assert.ok(card.delta > 0, 'above-median days show the higher mean');
+  assert.strictEqual(trends.buildCorrelation({ id: 't', xLabel: 'x', yLabel: 'y', unit: '', xs: xs.slice(0, 10), ys: ys.slice(0, 10) }), null,
+    'thirteen days of data is an anecdote');
+  const noise = trends.buildCorrelation({
+    id: 't', xLabel: 'x', yLabel: 'y', unit: '',
+    xs: Array.from({ length: 40 }, (_, i) => (i * 7919) % 13),
+    ys: Array.from({ length: 40 }, (_, i) => ((i + 5) * 104729) % 17),
+  });
+  assert.strictEqual(noise, null, 'weak correlations stay unreported');
+});
+
+test('the weekly report balance names restoring, optimal and overreaching', () => {
+  const current = { sleepAvg: 7.5, rhrAvg: 56, hrvAvg: 52, loadTotal: 700, stepsAvg: 9000, azmAvg: 30 };
+  const priors = [{ ...current, loadTotal: 650 }, { ...current, loadTotal: 700 }, { ...current, loadTotal: 690 }];
+  const optimal = trends.buildReport(current, priors, { fitness: 100 });
+  assert.strictEqual(optimal.balance.zone, 'optimal');
+  assert.strictEqual(trends.buildReport({ ...current, loadTotal: 400 }, priors, { fitness: 100 }).balance.zone, 'restoring');
+  assert.strictEqual(trends.buildReport({ ...current, loadTotal: 1000 }, priors, { fitness: 100 }).balance.zone, 'overreaching');
+  assert.strictEqual(trends.buildReport(current, priors, { fitness: 2 }).balance, null,
+    'no meaningful fitness, no balance claim');
+});
+
+// ---------------------------------------------------------------------------
+// goals — adaptive targets, rings, badges
+// ---------------------------------------------------------------------------
+
+test('goals adapt down on a low-readiness morning, with the reason attached', () => {
+  const normal = goals.buildAdaptiveGoals({
+    stepsMedian: 9000, activeCalMedian: 520, readinessScore: 75, tonightNeedHours: 8.2,
+  });
+  assert.strictEqual(normal.steps.reason, null);
+  const low = goals.buildAdaptiveGoals({
+    stepsMedian: 9000, activeCalMedian: 520, readinessScore: 38, tonightNeedHours: 8.2,
+  });
+  assert.ok(low.steps.goal < normal.steps.goal);
+  assert.ok(low.steps.reason.includes('38'), 'the goal explains itself');
+  assert.strictEqual(low.recover.goal, 8.2, 'the recover goal is tonight’s need');
+  const empty = goals.buildAdaptiveGoals({ stepsMedian: null, activeCalMedian: null, readinessScore: null, tonightNeedHours: null });
+  assert.strictEqual(empty.steps.goal, 10000, 'no history falls back to the stated default');
+});
+
+test('rings fill against the adaptive goals and cap their overshoot', () => {
+  const g = goals.buildAdaptiveGoals({ stepsMedian: 9000, activeCalMedian: 500, readinessScore: 70, tonightNeedHours: 8 });
+  const rings = goals.buildRings(g, { activeCalories: 5000, activeZoneMinutes: 10, sleepHours: null });
+  assert.strictEqual(rings.find((r) => r.id === 'move').fraction, 1.5, 'overshoot caps at 150%');
+  assert.strictEqual(rings.find((r) => r.id === 'recover').fraction, null, 'no measurement, no fill');
+  assert.strictEqual(rings.find((r) => r.id === 'train').closed, false);
+});
+
+test('badges earn from lifetime totals and show progress to the next rung', () => {
+  const b = goals.buildBadges({ distance: 1200, steps: 6.2e6, floors: 40, sessions: 55, nights: 400 });
+  const distance = b.badges.find((x) => x.id === 'distance');
+  assert.strictEqual(distance.earned.length, 3, '100, 500 and 1000 km are earned');
+  assert.strictEqual(distance.next.threshold, 2500);
+  assert.ok(distance.next.progress > 0.4 && distance.next.progress < 0.5);
+  assert.ok(!b.badges.find((x) => x.id === 'floors').earned.length, '40 floors has earned nothing yet');
+  assert.strictEqual(goals.longestStreak([1, 1, 0, 1, 1, 1, null, 1], 1), 3,
+    'a null day breaks a streak — untracked is not achieved');
+});
+
+// ---------------------------------------------------------------------------
+// storage-backed: strength log, empty-database resilience, load sourcing
+// ---------------------------------------------------------------------------
+
+testAsync('strength log validates, stores and deletes entries', async () => {
+  await assert.rejects(() => db.strengthAdd({ exercise: '', sets: 3, reps: 10, weightKg: 60 }));
+  await assert.rejects(() => db.strengthAdd({ exercise: 'Squat', sets: 0, reps: 10, weightKg: 60 }));
+  const entry = await db.strengthAdd({ exercise: 'Squat', sets: 5, reps: 5, weightKg: 80 });
+  assert.strictEqual(entry.volume_kg, 2000);
+  const listed = await db.strengthList(entry.ts_ms - 1000, entry.ts_ms + 1000);
+  assert.strictEqual(listed.length, 1);
+  assert.strictEqual(await db.strengthDelete(entry.id), true);
+  assert.strictEqual(await db.strengthDelete(entry.id), false, 'a second delete finds nothing');
+});
+
+testAsync('screen payloads survive an empty database', async () => {
+  // A brand-new account must get calibration states, not crashes or zeros.
+  // Earlier storage tests leave points behind (one zone row lands inside the
+  // 35-day load window), so make "empty" actually true first.
+  await db.clearAll();
+  const today = await screens.todayPayload(null, 0);
+  assert.strictEqual(today.readiness.band, 'calibrating');
+  assert.strictEqual(today.strain.today, null, 'no zone data, no strain — never 0');
+  const sleep = await screens.sleepScreenPayload(null, 0);
+  assert.strictEqual(sleep.consistency.score, null);
+  const train = await screens.trainPayload(0);
+  assert.strictEqual(train.latestSession, null);
+  const you = await screens.youPayload(0);
+  assert.strictEqual(you.resilience.level, null);
+  const trendsView = await screens.trendsPayload(0, {});
+  assert.ok(Array.isArray(trendsView.verdicts.metrics));
+});
+
+testAsync('daily load prefers device zone minutes and marks rest days zero', async () => {
+  const day = Date.UTC(2031, 2, 10);
+  await db.putPoints([{
+    dataType: 'time-in-heart-rate-zone', pointId: 'load-test/z1',
+    startMs: day, endMs: day + 86400000, value: 62,
+    parts: { OUT_OF_RANGE: 1200, FAT_BURN: 30, CARDIO: 12 }, raw: {},
+  }]);
+  const series = await training.dailyLoadSeries(day + 3 * 86400000, 5, 0, { maxHeartRate: 190 });
+  const withData = series.find((d) => d.t === day);
+  assert.strictEqual(withData.load, 30 * 2 + 12 * 4, 'FAT_BURN×2 + CARDIO×4, OUT_OF_RANGE×0');
+  assert.strictEqual(withData.source, 'device-zones');
+  const after = series.find((d) => d.t === day + 86400000);
+  assert.strictEqual(after.load, 0, 'a day after data began with no zones is a rest day');
+  const before = series.find((d) => d.t === day - 86400000);
+  assert.strictEqual(before.load, null, 'a day before data began is unknown, not rest');
 });
 
 // ---------------------------------------------------------------------------

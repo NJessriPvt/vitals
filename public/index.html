@@ -7,10 +7,14 @@
 <title>vitals</title>
 <!-- Relative, never root-absolute: served at / locally and under a stripped path
      prefix in the fleet. scripts/check-paths.js fails the build on a violation. -->
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;500;600&display=swap">
 <link rel="stylesheet" href="./style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>❤️</text></svg>">
 </head>
 <body>
+
+<div class="aurora" aria-hidden="true"></div>
 
 <header class="top">
   <div class="brand"><span class="mark" id="mark" aria-hidden="true"></span> vitals</div>
@@ -21,23 +25,36 @@
   </div>
 </header>
 
-<!-- One control decides the screen. Each screen answers a different question, so
-     each has its own endpoint rather than a shared filter bar. -->
+<!-- Five rooms, one question each: how am I now · how did I sleep · how is
+     training going · what is changing · who am I becoming. -->
 <nav class="tabs" role="tablist" aria-label="Views">
-  <button class="tab" role="tab" data-view="day" aria-selected="true">Day</button>
-  <button class="tab" role="tab" data-view="week" aria-selected="false">Week</button>
-  <button class="tab" role="tab" data-view="month" aria-selected="false">Month</button>
+  <button class="tab" role="tab" data-view="today" aria-selected="true">Today</button>
   <button class="tab" role="tab" data-view="sleep" aria-selected="false">Sleep</button>
+  <button class="tab" role="tab" data-view="train" aria-selected="false">Train</button>
+  <button class="tab" role="tab" data-view="trends" aria-selected="false">Trends</button>
+  <button class="tab" role="tab" data-view="you" aria-selected="false">You</button>
 </nav>
 
-<!-- Day stepper: shown for the day and sleep screens, which describe one date. -->
+<!-- Day stepper for the day-scoped rooms. The date itself is a button: tap it and
+     the month overlay opens — one tap to yesterday, two to any day. -->
 <div class="daybar" id="daybar" hidden>
   <button class="step" id="day-prev" type="button" aria-label="Previous day">‹</button>
-  <div class="date" id="day-label"></div>
+  <button class="date" id="day-label" type="button" aria-haspopup="dialog"
+          aria-label="Pick a date"></button>
   <button class="step" id="day-next" type="button" aria-label="Next day">›</button>
 </div>
 
 <main id="view"></main>
+
+<dialog id="calendar-dialog" class="calendar-dialog" aria-label="Jump to a day">
+  <div class="cal-head">
+    <button class="step" id="cal-prev" type="button" aria-label="Previous month">‹</button>
+    <div id="cal-title" class="cal-title"></div>
+    <button class="step" id="cal-next" type="button" aria-label="Next month">›</button>
+  </div>
+  <div class="cal-grid" id="cal-grid"></div>
+  <p class="cal-hint">Dots mark tracked days · rings mark workouts</p>
+</dialog>
 
 <dialog id="profile-dialog" class="profile-dialog" aria-labelledby="profile-title">
   <form id="profile-form">
@@ -62,6 +79,35 @@
     <div class="dialog-actions">
       <button id="profile-cancel" class="btn" type="button">Cancel</button>
       <button id="profile-save" class="btn btn-accent" type="submit">Save profile</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="strength-dialog" class="profile-dialog" aria-labelledby="strength-title">
+  <form id="strength-form">
+    <div class="dialog-head">
+      <div>
+        <h2 id="strength-title">Log strength work</h2>
+        <p>The one signal heart rate cannot carry — kept beside cardio load, never summed into it.</p>
+      </div>
+      <button id="strength-close" class="dialog-close" type="button" aria-label="Close">×</button>
+    </div>
+    <label class="field">
+      <span>Exercise</span>
+      <input id="strength-exercise" type="text" maxlength="80" required placeholder="Squat">
+    </label>
+    <div class="field-row">
+      <label class="field"><span>Sets</span>
+        <input id="strength-sets" type="number" min="1" max="50" required inputmode="numeric"></label>
+      <label class="field"><span>Reps</span>
+        <input id="strength-reps" type="number" min="1" max="200" required inputmode="numeric"></label>
+      <label class="field"><span>Weight (kg)</span>
+        <input id="strength-weight" type="number" min="0" max="1000" step="0.5" required inputmode="decimal"></label>
+    </div>
+    <p id="strength-error" class="form-error" role="alert" hidden></p>
+    <div class="dialog-actions">
+      <button id="strength-cancel" class="btn" type="button">Cancel</button>
+      <button id="strength-save" class="btn btn-accent" type="submit">Log it</button>
     </div>
   </form>
 </dialog>

@@ -1,9 +1,13 @@
 # CLAUDE.md — vitals
 
 Personal health dashboard: syncs the **Google Health API** into the fleet's MySQL
-and charts it. One dependency (`mysql2`); no framework, no build step. Deployed by
-infra at **2 replicas** (`infra/apps/vitals.yml`). Read `README.md` for setup and the
-API's access situation.
+and turns it into five screens — **Today · Sleep · Train · Trends · You** — each
+served by one purpose-built endpoint (`/api/screen/*`, composed in
+`lib/screens.js`). One dependency (`mysql2`); no framework, no build step. Deployed
+by infra at **2 replicas** (`infra/apps/vitals.yml`). Read `README.md` for setup,
+the API's access situation, and what each screen carries. Mobile-web first; the
+same payloads are the contract for a future native client, so keep them
+self-describing (dates, units, `method`, freshness) and never UI-shaped.
 
 `npm start` · `npm test` · `npm run check:paths`
 
@@ -130,8 +134,23 @@ Hand-rolled SVG against the house data-viz method. The palette in `style.css` is
 - Axis ticks take **one unit and one decimal rule for the whole axis**, derived from
   the largest tick and the step. Per-tick formatting prints `5,000` under `10.0K`,
   and integer rounding prints a 2.5 step as `0, 3, 5, 8, 10`.
+- New marks follow the same system: `ringGauge`/`arcGauge` keep the semantic colour
+  on the arc only (numerals wear text ink); `overlayChart` compares two days of the
+  SAME metric on one real axis, ghost dashed — still never a second y-axis;
+  `corridorChart` is band + dotted line; `heatCalendar` is single-hue sequential
+  with untracked days as empty dashed cells (not zero-coloured), and every cell is
+  a button that jumps to its day; `lineChart` gained `refBand` — the personal
+  p10–p90 painted behind any series. The stress `stateStrip` marks off-wrist hours
+  as unknown, never calm. The Aurora glass treatment changes surfaces only — the
+  validated palette values are untouched.
 
-## Derived insights (`lib/insights.js`)
+## Derived insights (`lib/insights.js` + `lib/scores.js`/`night.js`/`training.js`/`trends.js`/`goals.js`)
+
+The derived layer follows one shape everywhere: **pure `build*` functions taking
+pre-fetched inputs** (unit-testable) plus thin async wrappers that do the IO;
+`lib/screens.js` fetches shared inputs once per request and composes. Shared
+statistics live in `lib/stats.js` — medians/quantiles/EWMA that drop null, never
+substitute zero.
 
 - Activity detection is heart-rate-only. It may label a session “Elevated heart
   rate”; it must not guess an activity type without movement/GPS evidence.
@@ -148,15 +167,44 @@ Hand-rolled SVG against the house data-viz method. The palette in `style.css` is
   biological age or a diagnosis. It needs at least three well-covered signals, keeps
   unavailable inputs null, exposes each bounded contribution, and never moves more than
   ten years from profile age. RHR and HRV compare with the user's own prior 28 days.
+- **Readiness**: an unavailable input lowers COVERAGE, never the score — losing a
+  neutral signal must not move the number, and fewer than two of HRV/RHR/sleep means
+  no score at all (`calibrating`), not a default one.
+- **Strain is a TRIMP transform** (`21·(1−e^(−load/350))`), stated as such — never
+  present it as WHOOP's algorithm. Its daily input prefers the device's own
+  `time-in-heart-rate-zone` minutes (one cheap parts query) and only recomputes
+  zones from raw samples for a bounded recent window.
+- **A rest day is load 0; a pre-history day is null.** "Did not train" decays
+  fitness; "before the account existed" must not invent a detraining spiral. The
+  fitness/fatigue EWMAs seed at the first measured day for the same reason.
+- **Sleep need/debt learns from measured nights only** (≥4 h; sub-4 h sessions are
+  tracking noise). Naps split from the main night and repay debt at half rate,
+  visibly. Consistency does clock arithmetic on an 18:00-anchored scale so a 23:40
+  and a 00:20 bedtime are 40 minutes apart, not 23 hours.
+- **The symptom radar needs joint deviation** — two adverse signals for minor,
+  three for major, at least three measurable vitals to speak at all — and its
+  wording stays "signs of strain", never illness.
+- **Correlation cards** demand n ≥ 14 and |r| ≥ 0.3, report the above/below-median
+  split in real units, and say "associated", never "causes".
+- The strength log (`strength_log` table, `/api/strength`) is the one manual
+  input; its volume index sits BESIDE cardio load and is never summed into it.
 - The demo workout-window cadence must remain no coarser than the one-minute coverage
-  cap or every synthetic workout correctly looks like missing-watch data.
+  cap or every synthetic workout correctly looks like missing-watch data. Demo civil
+  dates are formatted from LOCAL date parts — the UTC slice of a local midnight dated
+  every daily summary a day early on a UTC+4 host, which left "today" without
+  vitals. Demo units mirror the measured API (weight in grams, height in mm).
 
 ## Testing
 
 `test/run.js` deliberately targets what fails *silently*: filter syntax, window
-chunking, restatement, timezone bucketing, sleep anchoring, gap handling, and the
-webhook's auth ordering. Rendering is checked by looking at the page — run
-`npm run demo` and open it.
+chunking, restatement, timezone bucketing, sleep anchoring, gap handling, the
+webhook's auth ordering — and, for the derived layer, the failure modes that would
+lie politely: a missing input moving a score, a rest day reading as unknown (or
+the reverse), debt counting untracked nights, consistency breaking at midnight,
+a detected session double-counting a recorded one, correlations reported from
+thirteen days of data. Screen payloads are also exercised against an EMPTY
+database: a new account must get calibration states, not crashes or zeros.
+Rendering is checked by looking at the page — run `npm run demo` and open it.
 
 ## The assistant reads this app
 

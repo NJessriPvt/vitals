@@ -1,8 +1,8 @@
 # vitals
 
-Your own health dashboard. It syncs the **Google Health API** into a local SQLite
-store and charts it — filterable by range, resolution and metric, with near-real-time
-updates via webhooks.
+Your own health dashboard. It syncs the **Google Health API** into the fleet's
+MySQL store and turns it into five screens — Today, Sleep, Train, Trends, You —
+with near-real-time updates via webhooks. Mobile-web first, laptop-ready.
 
 Zero dependencies. Node built-ins and vanilla JS, no build step, no `node_modules`.
 
@@ -14,23 +14,39 @@ npm test         # pure + MySQL-backed tests
 
 Then open <http://localhost:4330>.
 
-## WHOOP-inspired insights
+## The five rooms
 
-The Day screen derives three explainable insights from Google Health data:
+Each screen asks one question and gets one purpose-built endpoint
+(`/api/screen/today|sleep|train|trends|you`, plus `/api/screen/calendar` for the
+date-jump overlay). These payloads are also the API a native app would consume —
+they carry their own dates, units, methods and freshness.
 
-- **Age-aware heart-rate zones and cardio load.** Max HR defaults to `220 - age`;
-  the Profile dialog also accepts a measured max-HR override.
-- **Automatic activity detection.** A session appears after at least 10 minutes at
-  or above 60% of max HR. A five-minute dip or missing-sample gap ends it. Because
-  Google Health provides heart rate but not this app's own motion classifier, the app
-  calls it “Elevated heart rate” rather than guessing running, cycling, or lifting.
-- **Recovery outlook.** HRV and resting HR are compared with the user's prior
-  28-day median, and sleep with the eight-hour goal. It stays in “Building baseline”
-  until enough prior readings exist.
+- **Today** — a readiness score (0–100 against your own 28-day baselines, with
+  every contributor shown), day strain on a bounded 0–21 TRIMP transform with a
+  readiness-derived target band, an energy battery, an hourly stress timeline, a
+  Rise-style energy forecast for the day ahead, three adaptive rings
+  (Move · Train · Recover), PAI-style weekly intensity, and a symptom radar that
+  only speaks when two or more overnight vitals leave your personal range.
+- **Sleep** — the night first: hypnogram, time in bed, efficiency, naps (split
+  from the main night, repaying debt at half rate), learned sleep need and rolling
+  debt in hours, bed/wake consistency, overnight HR dip, night skin temperature
+  against your band, and a monthly pattern report.
+- **Train** — typed workouts merged with HR-detected sessions (10 min over 60%
+  max HR; the typed recording wins on overlap), per-session effort, heart-rate
+  recovery, fitness/fatigue/form (42/7-day EWMAs), a Gentler-Streak-style healthy
+  load corridor, a recovery countdown in hours, a season heat calendar, personal
+  records, and a manual strength log kept beside cardio load — never summed in.
+- **Trends** — a compare workbench (any day vs any day, or vs your typical
+  same-weekday with its p25–p75 band, on one axis), 90-vs-365-day trend verdicts,
+  metric heat calendars, automated correlation cards (n ≥ 14, |r| ≥ 0.3, worded
+  "associated"), and a weekly report with a load-vs-capacity balance.
+- **You** — the transparent fitness age with a 12-month arc, a slow resilience
+  level, symptom-radar history, a quarterly review, and lifetime milestones.
 
-These are deliberately labelled **derived**. They are transparent training signals,
-not WHOOP's proprietary Strain or Recovery scores and not medical advice. A missing
-measurement remains missing; it is never turned into zero.
+Everything is deliberately labelled **derived**, states its formula, and compares
+you with yourself — never population norms, never WHOOP/Oura/Garmin's proprietary
+scores, never medical advice. A missing measurement remains missing; it is never
+turned into zero.
 
 ---
 
@@ -155,8 +171,15 @@ lib/health.js    the ONLY module that calls Google for data (limits, chunks, pag
 lib/oauth.js     the ONLY module that handles tokens
 lib/normalize.js dataPoint JSON -> row; defensive, records what it guessed
 lib/db.js        MySQL storage; keeps the raw JSON alongside the derived value
-lib/query.js     read side: series, stat tiles, tables
-lib/insights.js  automatic activity sessions + personal recovery outlook
+lib/query.js     read side: series, stat tiles, tables, assistant digest
+lib/insights.js  automatic activity sessions, recovery outlook, fitness age
+lib/stats.js     shared robust statistics (median, quantile, EWMA, Pearson)
+lib/scores.js    readiness, strain target, battery, stress, PAI, resilience, radar
+lib/night.js     sleep need & debt, consistency, naps, HR dip, month pattern
+lib/training.js  daily load, fitness/fatigue/form, corridor, sessions, records
+lib/trends.js    baselines, verdicts, ghosts, heat, reports, correlations
+lib/goals.js     adaptive goals, rings, badges
+lib/screens.js   the five screen payloads composed from the modules above
 lib/sync.js      tail + backfill engine
 lib/webhook.js   receiver, handshake, signature verification
 lib/demo.js      synthetic data through the real pipeline

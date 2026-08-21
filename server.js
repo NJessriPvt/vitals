@@ -53,6 +53,7 @@ const {
   BUCKETS, seriesPayload, summaryPayload, tablePayload, assistantDigest,
 } = require('./lib/query');
 const views = require('./lib/views');
+const screens = require('./lib/screens');
 const metrics = require('./lib/metrics');
 
 const PORT = Number(process.env.PORT || 4330);
@@ -347,6 +348,59 @@ async function route(req, res, url) {
   if (pathname === '/api/view/sleep') {
     const offsetMs = tzOf(q);
     return json(res, 200, await views.sleepPayload(q.get('date'), q.get('days') || 7, offsetMs));
+  }
+
+  // --- the five screens -----------------------------------------------------
+  // Today / Sleep / Train / Trends / You — the P1 "Five Rooms" structure. Same
+  // contract as the legacy views above (which remain for compatibility): one
+  // purpose-built payload per screen, and these payloads are the API a native
+  // client would consume later, so nothing in them assumes this web UI.
+
+  if (pathname === '/api/screen/today') {
+    return json(res, 200, await screens.todayPayload(q.get('date'), tzOf(q)));
+  }
+
+  if (pathname === '/api/screen/sleep') {
+    return json(res, 200, await screens.sleepScreenPayload(q.get('date'), tzOf(q)));
+  }
+
+  if (pathname === '/api/screen/train') {
+    return json(res, 200, await screens.trainPayload(tzOf(q)));
+  }
+
+  if (pathname === '/api/screen/trends') {
+    return json(res, 200, await screens.trendsPayload(tzOf(q), {
+      a: q.get('a'), b: q.get('b'), metric: q.get('metric'), heatType: q.get('heat'),
+    }));
+  }
+
+  if (pathname === '/api/screen/you') {
+    return json(res, 200, await screens.youPayload(tzOf(q)));
+  }
+
+  if (pathname === '/api/screen/calendar') {
+    return json(res, 200, await screens.calendarPayload(q.get('month'), tzOf(q)));
+  }
+
+  // --- strength log (the one manually-logged signal) ------------------------
+  if (pathname === '/api/strength' && req.method === 'GET') {
+    const to = Number(q.get('to')) || Date.now();
+    const from = Number(q.get('from')) || to - 60 * 86400000;
+    return json(res, 200, { entries: await db.strengthList(from, to) });
+  }
+
+  if (pathname === '/api/strength' && req.method === 'POST') {
+    const body = await readJson(req);
+    const entry = await db.strengthAdd({
+      tsMs: body.tsMs, exercise: body.exercise, sets: body.sets,
+      reps: body.reps, weightKg: body.weightKg, note: body.note,
+    });
+    return json(res, 200, { ok: true, entry });
+  }
+
+  if (pathname === '/api/strength' && req.method === 'DELETE') {
+    const ok = await db.strengthDelete(q.get('id'));
+    return json(res, ok ? 200 : 404, { ok });
   }
 
   /** Age estimates max HR; a measured override can replace it for every zone. */

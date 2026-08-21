@@ -1,19 +1,21 @@
 'use strict';
 /**
- * vitals — view controller.
+ * vitals — view controller for the five rooms.
  *
- * Four screens, three endpoints. Each screen asks a different question and gets a
- * payload built for it, so the browser renders rather than computes: no screen
- * derives a total, an average or a zone here. Anything that looks like arithmetic in
- * this file is a formatting decision, not a health figure.
+ * Five screens, one endpoint each: Today (how am I now), Sleep (how did I sleep),
+ * Train (how is training going), Trends (what is changing), You (who am I
+ * becoming). Every payload arrives pre-aggregated; anything that looks like
+ * arithmetic here is a formatting decision, not a health figure.
  *
- * COLOUR FOLLOWS THE ENTITY. A metric's colour comes from its position in a fixed
- * list, never from its position in the current view, so a value keeps its colour
- * wherever it appears.
+ * COLOUR FOLLOWS THE ENTITY: a metric keeps its series slot on every screen.
+ * Semantic colours (good/warn/bad) appear only where the payload has already made
+ * the judgement — the UI never grades a number itself.
  */
 
 import {
-  lineChart, barChart, zoneBars, hypnogram, fmtNumber,
+  lineChart, barChart, stackedChart, zoneBars, hypnogram, sparkline,
+  ringGauge, arcGauge, ringTrio, corridorChart, overlayChart, heatCalendar,
+  stateStrip, fmtNumber,
 } from './charts.js';
 
 const $ = (id) => document.getElementById(id);
@@ -21,21 +23,19 @@ const api = (p) => `./api/${p}`;
 const DAY_MS = 86400000;
 
 const state = {
-  view: 'day',
-  date: null,          // YYYY-MM-DD for the day/sleep screens
-  hours: 24,           // "last X hours" filter on the day screen
-  sleepDays: 7,
+  view: 'today',
+  date: null,           // YYYY-MM-DD for the day-scoped rooms
   status: null,
   settings: null,
   data: null,
-  loading: false,
+  calMonth: null,       // YYYY-MM shown in the jump overlay
+  compare: { b: 'typical', metric: 'heart-rate', heat: 'steps' },
 };
 
-// Fixed colour per metric, so steps are the same colour on every screen.
-const TINT = {
-  steps: 1, distance: 2, cardioLoad: 3, calories: 4, heart: 6, sleep: 5,
-};
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const TINT = { steps: 1, distance: 2, cardioLoad: 3, calories: 4, heart: 6, sleep: 5 };
 const tint = (name) => `var(--series-${TINT[name] || 1})`;
+const seriesOf = (name) => css(`--series-${TINT[name] || 1}`);
 
 // ---------------------------------------------------------------------------
 // Small DOM helpers
@@ -62,15 +62,11 @@ function card(title, sub) {
   return c;
 }
 
-/** A metric tile. `sub` carries the caveat — derived, source, goal. */
 function metric(label, value, unit, sub, colorName) {
   const m = el('div', null, 'metric');
   m.style.setProperty('--tint', tint(colorName));
   m.appendChild(el('div', label, 'metric-label'));
   const v = el('div', null, 'metric-value');
-  // Formatters already render an absent value as an em dash, so test the RENDERED
-  // text, not the argument — otherwise a missing metric reads "— AZM", a unit
-  // attached to nothing.
   const shown = value === null || value === undefined || value === '' ? '—' : String(value);
   v.appendChild(document.createTextNode(shown));
   if (unit && shown !== '—') v.appendChild(el('span', ` ${unit}`, 'metric-unit'));
@@ -80,9 +76,7 @@ function metric(label, value, unit, sub, colorName) {
     if (sub.derived) {
       const d = el('span', 'derived', 'derived');
       s.append(d, document.createTextNode(` ${sub.text || ''}`));
-    } else {
-      s.textContent = sub.text || sub;
-    }
+    } else s.textContent = sub.text || sub;
   }
   m.appendChild(s);
   return m;
@@ -102,6 +96,7 @@ function segmented(options, current, onPick) {
 
 const hhmm = (h) => (h === null || h === undefined ? '—'
   : `${Math.floor(h)}h ${Math.round((h % 1) * 60)}m`);
+const timeOf = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 async function getJson(url) {
   const res = await fetch(url, { headers: { accept: 'application/json' } });
@@ -109,10 +104,11 @@ async function getJson(url) {
   return res.json();
 }
 
-async function postJson(url, body) {
+async function sendJson(url, body, method = 'POST') {
   const res = await fetch(url, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body || {}),
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body || {}),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
@@ -135,381 +131,865 @@ function prettyDate(dateStr) {
   return date.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
 }
 
-const timeOf = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-function recoveryDetail(signal) {
-  if (signal.current === null) return 'Not measured for this day';
-  if (signal.id === 'sleep') {
-    return signal.goalPercent === null ? 'No sleep goal comparison'
-      : `${signal.goalPercent}% of ${signal.goal}h goal · baseline ${hhmm(signal.baseline)}`;
-  }
-  if (signal.baseline === null) return `Need ${5 - Math.min(5, signal.baselineCount)} more baseline day(s)`;
-  if (signal.id === 'hrv') {
-    const delta = signal.deltaPercent;
-    return `${delta > 0 ? '+' : ''}${delta}% vs ${signal.baseline} ms baseline`;
-  }
-  const delta = signal.delta;
-  return `${delta > 0 ? '+' : ''}${delta} bpm vs ${signal.baseline} bpm baseline`;
+function methodNote(c, obj) {
+  if (obj && obj.method) c.appendChild(el('p', obj.method, 'method-note'));
+  if (obj && obj.limitation) c.appendChild(el('p', obj.limitation, 'method-note'));
 }
 
-function renderFitnessAge(outlook) {
-  const through = outlook.coverage.completeThrough ? ` · through ${outlook.coverage.completeThrough}` : '';
-  const c = card('Fitness age estimate', `Recent ${outlook.coverage.recentWindowDays} complete days${through}`);
-  const stateClass = outlook.direction === 'younger' ? 'favorable'
-    : outlook.direction === 'older' ? 'unfavorable'
-      : outlook.direction === 'aligned' ? 'neutral' : 'unavailable';
-  const summary = el('div', null, `fitness-age-summary ${stateClass}`);
-
-  if (outlook.estimate === null) {
-    summary.append(
-      el('strong', 'Building fitness history'),
-      el('span', `${outlook.coverage.availableSignals} of ${outlook.coverage.requiredSignals} required signals are ready`),
-    );
-  } else {
-    const age = el('div', String(outlook.estimate), 'fitness-age-value');
-    age.appendChild(el('span', ' years', 'metric-unit'));
-    const delta = outlook.deltaYears === 0
-      ? `In line with profile age ${outlook.actualAge}`
-      : `${Math.abs(outlook.deltaYears)} year${Math.abs(outlook.deltaYears) === 1 ? '' : 's'} ${outlook.direction} than profile age ${outlook.actualAge}`;
-    summary.append(age, el('strong', delta), el('span', `${outlook.coverage.confidence} confidence`));
-  }
-  c.appendChild(summary);
-
-  const grid = el('div', null, 'fitness-factor-grid');
-  for (const factor of outlook.factors) {
-    const item = el('article', null, `fitness-factor ${factor.status}`);
-    item.appendChild(el('div', factor.label, 'signal-label'));
-    const value = factor.available ? `${factor.value} ${factor.unit}` : '—';
-    item.appendChild(el('div', value, 'fitness-factor-value'));
-    item.appendChild(el('div', factor.detail, 'signal-detail'));
-    if (factor.available) {
-      const impact = factor.contributionYears;
-      const text = Math.abs(impact) < 0.1 ? 'neutral age effect'
-        : `${impact > 0 ? '+' : ''}${impact} year${Math.abs(impact) === 1 ? '' : 's'} contribution`;
-      item.appendChild(el('div', text, 'fitness-factor-impact'));
-    }
-    grid.appendChild(item);
-  }
-  c.appendChild(grid);
-  c.append(
-    el('p', outlook.method, 'method-note'),
-    el('p', outlook.limitation, 'method-note'),
-  );
-  return c;
-}
-
-function renderRecovery(outlook) {
-  const c = card('Recovery outlook', `Personal ${outlook.baselineDays}-day baseline · derived, not WHOOP Recovery`);
-  const summary = el('div', null, `recovery-summary ${outlook.status}`);
-  summary.appendChild(el('strong', outlook.label));
-  summary.appendChild(el('span', outlook.limitation));
-  c.appendChild(summary);
-
-  const grid = el('div', null, 'signal-grid');
-  for (const signal of outlook.signals) {
-    const item = el('article', null, `signal ${signal.status}`);
-    item.appendChild(el('div', signal.label, 'signal-label'));
-    const value = el('div', signal.current === null ? '—' : String(signal.current), 'signal-value');
-    if (signal.current !== null) value.appendChild(el('span', ` ${signal.unit}`, 'metric-unit'));
-    item.append(value, el('div', recoveryDetail(signal), 'signal-detail'));
-    grid.appendChild(item);
-  }
-  c.appendChild(grid);
-  return c;
-}
-
-function renderActivities(activity) {
-  const source = activity.maxHeartRateSource === 'manual'
-    ? `manual max HR ${activity.maxHeartRate}` : `age-estimated max HR ${activity.maxHeartRate}`;
-  const c = card('Detected activities',
-    `At least ${activity.minimumMinutes} min above ${activity.thresholdBpm} bpm · ${source}`);
-
-  if (!activity.sessions.length) {
-    c.appendChild(el('p', 'No sustained elevated-heart-rate activity detected for this day.', 'empty-state'));
-  } else {
-    const list = el('ol', null, 'activity-list');
-    for (const session of activity.sessions) {
-      const row = el('li', null, 'activity-row');
-      const main = el('div', null, 'activity-main');
-      main.append(
-        el('strong', 'Elevated heart rate'),
-        el('span', `${timeOf(session.start)}–${timeOf(session.end)} · ${session.durationMinutes} min`),
-      );
-      const stats = el('div', null, 'activity-stats');
-      for (const [label, value] of [
-        ['Avg', `${session.averageHeartRate} bpm`],
-        ['Max', `${session.maxHeartRate} bpm`],
-        ['Peak', `Zone ${session.peakZone}`],
-        ['Load', String(session.cardioLoad)],
-        ['Burned', session.activeCalories === null ? '—' : `${fmtNumber(session.activeCalories, 0)} kcal`],
-      ]) {
-        const stat = el('span');
-        stat.append(el('small', label), document.createTextNode(value));
-        stats.appendChild(stat);
-      }
-      row.append(main, stats);
-      list.appendChild(row);
-    }
-    c.appendChild(list);
-  }
-  c.appendChild(el('p', activity.limitation, 'method-note'));
-  return c;
+/** Jump to a specific day in a day-scoped room — every heat cell uses this. */
+function jumpToDay(dateStr, view = 'today') {
+  state.date = dateStr > todayStr() ? todayStr() : dateStr;
+  setView(view);
 }
 
 // ---------------------------------------------------------------------------
-// Day screen
+// TODAY — the orbital
 // ---------------------------------------------------------------------------
 
-function renderDay(d) {
+const BAND_COLOR = { high: '--good', moderate: '--warn', low: '--bad' };
+
+function renderToday(d) {
   const main = $('view');
   main.replaceChildren();
-  const h = d.headline;
+  main.className = 'room';
 
-  // --- headline metrics ----------------------------------------------------
-  const metrics = el('section', null, 'metrics');
-  metrics.append(
-    metric('Steps', fmtNumber(h.steps, 0), '', h.steps !== null && d.goals.steps
-      ? { text: `goal ${fmtNumber(d.goals.steps, 0, true)}` } : null, 'steps'),
-    metric('Distance', h.distanceKm === null ? null : h.distanceKm.toFixed(2), 'km', null, 'distance'),
-    metric('Cardio load', fmtNumber(h.cardioLoad, 0), '',
-      { derived: true, text: `${Math.round(d.zones.total.trackedMinutes)} min tracked` }, 'cardioLoad'),
-    metric('Energy burned', fmtNumber(h.activeCalories, 0), 'kcal',
-      h.totalCalories ? { text: `${fmtNumber(h.totalCalories, 0)} total` } : null, 'calories'),
-    metric('Sleep', hhmm(h.sleepHours), '',
-      h.sleepEfficiencyPercent ? { text: `${h.sleepEfficiencyPercent}% efficiency` } : null, 'sleep'),
-    metric('Heart rate',
-      h.heartRate ? `${h.heartRate.min}–${h.heartRate.max}` : null, 'bpm',
-      h.heartRate ? { text: `avg ${h.heartRate.avg}` } : null, 'heart'),
-    metric('Resting HR', fmtNumber(h.restingHeartRate, 0), 'bpm',
-      h.restingHeartRateSource === 'derived'
-        ? { derived: true, text: 'lowest while asleep' } : null, 'heart'),
-    metric('Active zone min', fmtNumber(h.activeZoneMinutes, 0), 'AZM', null, 'cardioLoad'),
-    metric('HRV', fmtNumber(h.hrv, 0), 'ms', h.hrvSource === 'derived'
-      ? { derived: true, text: 'from raw samples' } : { text: 'recovery input' }, 'heart'),
-  );
-  main.appendChild(metrics);
+  // --- hero: readiness with strain and battery orbiting ---------------------
+  const hero = card('Readiness', `${d.readiness.availableContributors} signals vs your 28-day baselines`);
+  hero.classList.add('span-2');
+  const orbital = el('div', null, 'orbital');
+  const left = el('div', null, 'side');
+  const strainHost = el('div');
+  left.appendChild(strainHost);
+  const core = el('div', null, 'core');
+  const ringHost = el('div');
+  core.appendChild(ringHost);
+  const right = el('div', null, 'side');
+  const battHost = el('div');
+  right.appendChild(battHost);
+  orbital.append(left, core, right);
+  hero.appendChild(orbital);
 
-  // --- WHOOP-inspired, explainable insights -------------------------------
-  const insightGrid = el('div', null, 'grid-2 insight-section');
-  insightGrid.append(
-    renderFitnessAge(d.insights.fitnessAge),
-    renderRecovery(d.insights.recovery),
-    renderActivities(d.insights.activities),
-  );
-  main.appendChild(insightGrid);
+  const label = el('p', null, 'readiness-label');
+  if (d.readiness.score === null) {
+    label.append(el('b', d.readiness.label), document.createTextNode(' — a few more tracked mornings and this lights up.'));
+  } else {
+    label.append(el('b', d.readiness.label));
+    if (d.strain.target) label.append(document.createTextNode(` · strain target ${d.strain.target.lo}–${d.strain.target.hi}`));
+  }
+  hero.appendChild(label);
 
-  // --- heart rate through the day -----------------------------------------
-  const hrCard = card('Heart rate', `${d.heartRateTrace.points.length} points · min/max band`);
-  const hrHost = el('div', null, 'chart');
-  hrCard.appendChild(hrHost);
-  main.appendChild(hrCard);
+  const chips = el('div', null, 'contrib-row');
+  for (const c of d.readiness.contributors) {
+    const chip = el('span', null, `contrib ${c.status}`);
+    chip.append(document.createTextNode(`${c.label} `), el('b', c.current === null ? '—' : String(c.current)));
+    chip.title = c.detail || '';
+    chips.appendChild(chip);
+  }
+  hero.appendChild(chips);
+  methodNote(hero, d.readiness);
+  main.appendChild(hero);
 
-  // --- zones ---------------------------------------------------------------
-  const zoneCard = card('Time in zones',
-    `Zones 1–6 by % of max HR (${d.zones.maxHeartRate} bpm, from age ${d.age}) · derived from raw samples`);
-  const zoneHost = el('div');
-  zoneCard.appendChild(zoneHost);
-  main.appendChild(zoneCard);
+  // --- energy forecast ------------------------------------------------------
+  const fc = card('Energy forecast', d.forecast.available
+    ? `Peak ${d.forecast.zones.peak ? timeOf(d.forecast.zones.peak.at) : '—'} · dip ${d.forecast.zones.dip ? timeOf(d.forecast.zones.dip.at) : '—'} · wind down ${timeOf(d.forecast.zones.windDown.from)}`
+    : 'Needs a measured wake time');
+  const fcHost = el('div', null, 'chart');
+  fc.appendChild(fcHost);
+  if (d.forecast.available) methodNote(fc, { method: d.forecast.method });
+  main.appendChild(fc);
 
-  // --- hourly, with the last-X-hours filter --------------------------------
-  const hourCard = card('Through the day', 'Cardio load and calories per hour');
-  const filter = segmented(
-    [[24, 'All day'], [12, 'Last 12h'], [6, 'Last 6h'], [3, 'Last 3h']],
-    state.hours,
-    (v) => { state.hours = v; renderDay(d); },
-  );
-  hourCard.head.appendChild(filter);
+  // --- rings + goals --------------------------------------------------------
+  const ringsCard = card('Rings', d.goals.adapted ? 'Targets adapted to this morning' : 'Move · Train · Recover');
+  const wrap = el('div', null, 'rings-wrap');
+  const trioHost = el('div');
+  wrap.appendChild(trioHost);
+  const legend = el('div', null, 'rings-legend');
+  const ringColors = { move: seriesOf('steps'), train: seriesOf('cardioLoad'), recover: seriesOf('sleep') };
+  for (const r of d.rings) {
+    const line = el('div', null, 'ring-line');
+    const sw = el('span', null, 'swatch');
+    sw.style.background = ringColors[r.id];
+    const val = r.unit === 'h' ? hhmm(r.value) : fmtNumber(r.value, 0);
+    line.append(sw, el('span', r.label), el('b', r.value === null ? '—' : val),
+      el('span', `/ ${r.unit === 'h' ? `${r.goal}h` : fmtNumber(r.goal, 0)} ${r.unit === 'h' ? '' : r.unit}`, 'goal'));
+    if (r.closed) line.append(el('span', '● closed', 'goal'));
+    legend.appendChild(line);
+  }
+  const pai = el('div', null, 'pai-chip');
+  pai.append(el('span', 'Weekly intensity'), el('b', d.pai.total === null ? '—' : String(d.pai.total)),
+    el('span', `/ ${d.pai.target} · ${d.pai.measuredDays} days measured`));
+  legend.appendChild(pai);
+  wrap.appendChild(legend);
+  ringsCard.appendChild(wrap);
+  const adaptedReason = d.goals.steps.reason || d.goals.move.reason;
+  if (adaptedReason) ringsCard.appendChild(el('p', `Goals ${adaptedReason}`, 'goal-reason'));
+  main.appendChild(ringsCard);
 
-  const loadHost = el('div', null, 'chart');
-  const calLabel = el('p', 'Calories per hour', 'card-sub');
-  const calHost = el('div', null, 'chart');
-  const stepLabel = el('p', 'Steps per hour', 'card-sub');
-  const stepHost = el('div', null, 'chart');
-  hourCard.append(el('p', 'Cardio load per hour', 'card-sub'), loadHost, calLabel, calHost, stepLabel, stepHost);
-  main.appendChild(hourCard);
+  // --- stress timeline ------------------------------------------------------
+  const stress = card('Stress', d.stress.trackedHours
+    ? `${d.stress.trackedHours}h tracked · calm ${Math.round((d.stress.shares.calm || 0) * 100)}%`
+    : 'No tracked hours yet');
+  const stripHost = el('div');
+  stress.appendChild(stripHost);
+  methodNote(stress, { limitation: d.stress.limitation });
+  main.appendChild(stress);
 
-  // --- sleep summary -------------------------------------------------------
-  if (d.sleep) {
-    const sleepCard = card('Last night', 'Tap Sleep for the full night');
-    const hypHost = el('div', null, 'hypno');
-    sleepCard.appendChild(hypHost);
-    main.appendChild(sleepCard);
-    requestAnimationFrame(() => hypnogram(hypHost, d.sleep.timeline, {
-      from: Date.parse(d.sleep.bedtime), to: Date.parse(d.sleep.wakeTime),
-    }));
+  // --- symptom radar (only when it has something to say) --------------------
+  if (d.radar.level === 'minor' || d.radar.level === 'major') {
+    const radar = card('Symptom radar', `${d.radar.flaggedCount} overnight signals outside your range`);
+    radar.classList.add('span-2');
+    const grid = el('div', null, 'radar-signals');
+    for (const s of d.radar.signals.filter((x) => x.available)) {
+      const item = el('article', null, `signal ${s.flagged ? 'negative' : 'positive'}`);
+      item.appendChild(el('div', s.label, 'signal-label'));
+      const v = el('div', String(s.current), 'signal-value');
+      v.appendChild(el('span', ` ${s.unit}`, 'metric-unit'));
+      item.append(v, el('div', s.band ? `your range ${s.band.p10}–${s.band.p90}` : '', 'signal-detail'));
+      grid.appendChild(item);
+    }
+    radar.appendChild(grid);
+    methodNote(radar, d.radar);
+    main.appendChild(radar);
   }
 
-  // Charts after layout, so they measure a real width.
+  // --- highlights -----------------------------------------------------------
+  if (d.highlights.length) {
+    const hl = card('Highlights');
+    for (const h of d.highlights) {
+      const item = el('div', null, 'insight-card');
+      item.append(el('div', 'highlight', 'insight-kind'), el('div', h.text, 'insight-text'));
+      hl.appendChild(item);
+    }
+    main.appendChild(hl);
+  }
+
+  // --- last night strip -----------------------------------------------------
+  const sleep = card('Last night', 'The full night lives in Sleep');
+  const strip = el('div', null, 'debt-hero');
+  strip.append(el('b', d.sleepStrip.mainHours === null ? '—' : hhmm(d.sleepStrip.mainHours)));
+  const sub = el('div', null, 'sub');
+  sub.append(document.createTextNode(
+    `need ${d.sleepStrip.needHours ? hhmm(d.sleepStrip.needHours) : '—'} · debt ${d.sleepStrip.debtHours === null ? '—' : `${d.sleepStrip.debtHours}h`}`
+    + (d.sleepStrip.efficiencyPercent ? ` · ${d.sleepStrip.efficiencyPercent}% efficient` : ''),
+  ));
+  strip.appendChild(sub);
+  sleep.appendChild(strip);
+  if (d.sleepStrip.naps && d.sleepStrip.naps.length) {
+    for (const n of d.sleepStrip.naps) {
+      const row = el('div', null, 'nap-row');
+      row.append(el('b', hhmm(n.hours)), el('span', `nap at ${timeOf(n.start)} · repaid ${n.debtCreditHours}h of debt`));
+      sleep.appendChild(row);
+    }
+  }
+  main.appendChild(sleep);
+
+  // --- day stats ------------------------------------------------------------
+  const statsCard = el('section', null, 'metrics span-2');
+  statsCard.append(
+    metric('Steps', fmtNumber(d.stats.steps, 0), '', { text: `goal ${fmtNumber(d.stats.stepsGoal, 0, true)}` }, 'steps'),
+    metric('Distance', d.stats.distanceKm === null ? null : d.stats.distanceKm.toFixed(2), 'km', null, 'distance'),
+    metric('Active kcal', fmtNumber(d.stats.activeCalories, 0), '', null, 'calories'),
+    metric('Zone minutes', fmtNumber(d.stats.activeZoneMinutes, 0), 'AZM', null, 'cardioLoad'),
+    metric('Resting HR', fmtNumber(d.stats.restingHeartRate, 0), 'bpm',
+      d.stats.restingSource === 'derived' ? { derived: true, text: 'lowest while asleep' } : null, 'heart'),
+    metric('HRV', fmtNumber(d.stats.hrv, 0), 'ms',
+      d.stats.hrvSource === 'derived' ? { derived: true, text: 'from raw samples' } : null, 'heart'),
+  );
+  main.appendChild(statsCard);
+
+  if (d.mondayReport) {
+    const mon = card('Monday');
+    const link = el('button', 'Your weekly report is ready → Trends', 'btn');
+    link.type = 'button';
+    link.addEventListener('click', () => setView('trends'));
+    mon.appendChild(link);
+    main.appendChild(mon);
+  }
+
   requestAnimationFrame(() => {
-    const height = window.innerWidth < 560 ? 170 : 210;
-
-    lineChart(hrHost, {
-      points: d.heartRateTrace.points, unit: 'bpm', precision: 0,
-      bucketMs: d.heartRateTrace.bucketMs, label: 'Heart rate',
-      band: true, color: getComputedStyle(document.documentElement).getPropertyValue('--series-6').trim(),
-    }, height);
-
-    zoneBars(zoneHost, d.zones.zones, d.zones.total.minutes);
-
-    // The filter trims the window; the payload is always the whole day, so this is
-    // a display slice and never a different question asked of the server.
-    const cut = (rows) => (state.hours >= 24 ? rows : rows.slice(-state.hours));
-    const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-
-    barChart(loadHost, {
-      points: cut(d.hourly.cardioLoad), unit: 'load', precision: 0,
-      bucketMs: d.hourly.bucketMs, label: 'Cardio load', color: css('--series-3'),
-    }, height);
-    barChart(calHost, {
-      points: cut(d.hourly.activeCalories), unit: 'kcal', precision: 0,
-      bucketMs: d.hourly.bucketMs, label: 'Calories', color: css('--series-4'),
-    }, height);
-    barChart(stepHost, {
-      points: cut(d.hourly.steps), unit: 'steps', precision: 0,
-      bucketMs: d.hourly.bucketMs, label: 'Steps', color: css('--series-1'),
-    }, height);
+    const bandVar = BAND_COLOR[d.readiness.band];
+    ringGauge(ringHost, {
+      value: d.readiness.score, max: 100,
+      sublabel: 'readiness',
+      color: bandVar ? css(bandVar) : css('--muted'),
+      size: window.innerWidth < 560 ? 132 : 152,
+    });
+    arcGauge(strainHost, {
+      value: d.strain.today, max: d.strain.max, label: 'strain',
+      band: d.strain.target, color: seriesOf('cardioLoad'),
+      format: (v) => v.toFixed(1),
+    });
+    arcGauge(battHost, {
+      value: d.battery.current, max: 100, label: 'battery',
+      color: seriesOf('calories'), format: (v) => `${v}%`,
+    });
+    if (d.forecast.available) {
+      lineChart(fcHost, {
+        points: d.forecast.points, unit: '', precision: 0, bucketMs: 1800000,
+        label: 'Predicted energy', area: true, color: seriesOf('sleep'),
+      }, window.innerWidth < 560 ? 150 : 180);
+    } else {
+      fcHost.replaceChildren(el('div', 'No wake time measured this morning', 'chart-empty'));
+    }
+    ringTrio(trioHost, d.rings.map((r) => ({ fraction: r.fraction, color: ringColors[r.id] })));
+    stateStrip(stripHost, d.stress.points);
   });
 }
 
 // ---------------------------------------------------------------------------
-// Week / Month screen
+// SLEEP — night first
 // ---------------------------------------------------------------------------
 
-const OVERVIEW_COLUMNS = [
-  ['date', 'Day', (r) => prettyDate(r.date)],
-  ['steps', 'Steps', (r) => fmtNumber(r.steps, 0)],
-  ['distanceKm', 'Dist (km)', (r) => (r.distanceKm === null ? '—' : r.distanceKm.toFixed(2))],
-  ['cardioLoad', 'Load', (r) => fmtNumber(r.cardioLoad, 0)],
-  ['activeCalories', 'Active kcal', (r) => fmtNumber(r.activeCalories, 0)],
-  ['sleepHours', 'Sleep', (r) => (r.sleepHours === null ? '—' : hhmm(r.sleepHours))],
-  ['hr', 'HR min–max', (r) => (r.heartRate ? `${r.heartRate.min}–${r.heartRate.max}` : '—')],
-];
-
-function renderOverview(d) {
+function renderSleepScreen(d) {
   const main = $('view');
   main.replaceChildren();
-  const a = d.averages;
-
-  const metrics = el('section', null, 'metrics');
-  metrics.append(
-    metric('Steps / day', fmtNumber(a.stepsPerDay, 0), '', { text: `${fmtNumber(d.totals.steps, 0, true)} total` }, 'steps'),
-    metric('Distance / day', a.distanceKmPerDay === null ? null : a.distanceKmPerDay.toFixed(2), 'km',
-      { text: `${d.totals.distanceKm} km total` }, 'distance'),
-    metric('Cardio load / day', fmtNumber(a.cardioLoadPerDay, 0), '',
-      { derived: true, text: `${fmtNumber(d.totals.cardioLoad, 0)} total` }, 'cardioLoad'),
-    metric('Active kcal / day', fmtNumber(a.activeCaloriesPerDay, 0), 'kcal', null, 'calories'),
-    metric('Sleep / night', hhmm(a.sleepHoursPerNight), '', null, 'sleep'),
-    metric('AZM / day', fmtNumber(a.activeZoneMinutesPerDay, 0), '', null, 'cardioLoad'),
-  );
-  main.appendChild(metrics);
-
-  const chartsCard = card(`Per day · last ${d.days} days`, 'One bar per day, so gaps are real gaps');
-  const hosts = {};
-  for (const [key, label, color] of [
-    ['steps', 'Steps', '--series-1'],
-    ['cardioLoad', 'Cardio load', '--series-3'],
-    ['sleepHours', 'Sleep (hours)', '--series-5'],
-    ['activeCalories', 'Active calories', '--series-4'],
-  ]) {
-    chartsCard.appendChild(el('p', label, 'card-sub'));
-    hosts[key] = el('div', null, 'chart');
-    hosts[key].dataset.color = color;
-    chartsCard.appendChild(hosts[key]);
-  }
-  main.appendChild(chartsCard);
-
-  const tableCard = card('Compare', 'Every metric, day by day');
-  const wrap = el('div', null, 'table-wrap');
-  const table = el('table', null, 'data-table');
-  const thead = el('thead');
-  const hr = el('tr');
-  for (const [, label] of OVERVIEW_COLUMNS) hr.appendChild(el('th', label));
-  thead.appendChild(hr);
-  table.appendChild(thead);
-  const tbody = el('tbody');
-  for (const row of [...d.rows].reverse()) {
-    const tr = el('tr');
-    for (const [key, , fmt] of OVERVIEW_COLUMNS) {
-      const td = el('td', fmt(row));
-      if (key !== 'date' && (row[key] === null || row[key] === undefined)) td.className = 'dim';
-      tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
-  }
-  table.appendChild(tbody);
-  wrap.appendChild(table);
-  tableCard.appendChild(wrap);
-  main.appendChild(tableCard);
-
-  requestAnimationFrame(() => {
-    const height = window.innerWidth < 560 ? 150 : 190;
-    const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-    for (const [key, host] of Object.entries(hosts)) {
-      barChart(host, {
-        points: d.rows.map((r) => ({ t: r.t, v: r[key] })),
-        unit: '', precision: key === 'sleepHours' ? 1 : 0,
-        bucketMs: DAY_MS, label: key, color: css(host.dataset.color),
-      }, height);
-    }
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Sleep screen
-// ---------------------------------------------------------------------------
-
-function renderSleep(d) {
-  const main = $('view');
-  main.replaceChildren();
+  main.className = 'room';
   const n = d.night;
-  const a = d.averages;
 
-  const metrics = el('section', null, 'metrics');
+  const metrics = el('section', null, 'metrics span-2');
   metrics.append(
     metric('Asleep', hhmm(n ? n.hoursAsleep : null), '',
-      d.goalHours ? { text: `goal ${d.goalHours}h` } : null, 'sleep'),
-    metric('In bed', hhmm(n ? n.hoursInBed : null), '', null, 'sleep'),
+      d.need.tonightNeedHours ? { text: `need ${hhmm(d.need.tonightNeedHours)}` } : null, 'sleep'),
+    metric('In bed', hhmm(n ? n.hoursInBed : null), '', { text: 'asleep + awake in session' }, 'sleep'),
     metric('Efficiency', n && n.efficiencyPercent !== null ? n.efficiencyPercent : null, '%',
       { text: 'asleep ÷ in bed' }, 'sleep'),
-    metric('Deep', hhmm(n && n.stageHours ? n.stageHours.deep : null), '', null, 'sleep'),
-    metric('REM', hhmm(n && n.stageHours ? n.stageHours.rem : null), '', null, 'sleep'),
-    metric('Awake', hhmm(n && n.stageHours ? n.stageHours.awake : null), '', null, 'sleep'),
+    metric('Sleep debt', d.need.debtHours === null ? null : d.need.debtHours, 'h',
+      { derived: true, text: `over 14 nights` }, 'sleep'),
+    metric('Consistency', d.consistency.score, '%',
+      d.consistency.score === null
+        ? { text: `needs ${d.consistency.requiredNights} nights` }
+        : { text: `±${d.consistency.spreadMinutes} min over ${d.consistency.nights} nights` }, 'sleep'),
+    metric('Naps today', d.naps.length, '', d.naps.length
+      ? { text: `repaid ${d.naps.reduce((a, x) => a + x.debtCreditHours, 0).toFixed(1)}h debt` } : null, 'sleep'),
   );
   main.appendChild(metrics);
 
   const nightCard = card('The night', n && n.bedtime
-    ? `${new Date(n.bedtime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} → ${new Date(n.wakeTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    ? `${timeOf(Date.parse(n.bedtime))} → ${timeOf(Date.parse(n.wakeTime))}`
     : 'No staged sleep recorded');
+  nightCard.classList.add('span-2');
   const hypHost = el('div', null, 'hypno');
   nightCard.appendChild(hypHost);
   main.appendChild(nightCard);
 
-  const trendCard = card('Trend', `Averages over ${a.nights} night${a.nights === 1 ? '' : 's'}`);
-  trendCard.head.appendChild(segmented(
-    [[7, 'Week'], [30, 'Month']], state.sleepDays,
-    (v) => { state.sleepDays = v; load(); },
-  ));
-  trendCard.appendChild(el('p',
-    `Average ${hhmm(a.hoursAsleep)} asleep · ${a.efficiencyPercent ?? '—'}% efficiency · `
-    + `deep ${hhmm(a.stageHours.deep)} · REM ${hhmm(a.stageHours.rem)}`, 'card-sub'));
+  const needCard = card('Need & debt', 'Rise-style: a balance in hours, not a nightly grade');
+  const needRows = el('div', null, 'report-rows');
+  for (const [label, v] of [
+    ['Your learned need', d.need.baseNeedHours ? hhmm(d.need.baseNeedHours) : '—'],
+    ['Tonight’s need', d.need.tonightNeedHours ? hhmm(d.need.tonightNeedHours) : '—'],
+    ['Debt to repay', d.need.debtHours === null ? '—' : `${d.need.debtHours} h`],
+    ['Nights it learned from', String(d.need.nightsUsed)],
+  ]) {
+    const row = el('div', null, 'report-row');
+    row.append(el('span', label, 'label'), el('b', v));
+    needRows.appendChild(row);
+  }
+  needCard.appendChild(needRows);
+  methodNote(needCard, d.need);
+  main.appendChild(needCard);
+
+  const dipCard = card('Overnight heart-rate dip', 'How far your sleeping heart rate fell');
+  if (d.heartRateDip.dipPercent === null) {
+    dipCard.appendChild(el('p', 'Not enough overnight samples for this night.', 'empty-state'));
+  } else {
+    const hero = el('div', null, 'debt-hero');
+    hero.append(el('b', `${d.heartRateDip.dipPercent}%`),
+      el('div', `sleeping ${d.heartRateDip.sleepingAvg} vs daytime ${d.heartRateDip.daytimeAvg} bpm · floor ${d.heartRateDip.floorBpm} at ${timeOf(d.heartRateDip.bottomAtMs)}`, 'sub'));
+    dipCard.appendChild(hero);
+    methodNote(dipCard, d.heartRateDip);
+  }
+  main.appendChild(dipCard);
+
+  const tempCard = card('Night temperature', 'Skin deviation from your own baseline');
+  const tempHost = el('div', null, 'chart');
+  tempCard.appendChild(tempHost);
+  main.appendChild(tempCard);
+
+  const trendCard = card('Seven nights', 'Stages per night · deep is darkest');
+  trendCard.classList.add('span-2');
   const trendHost = el('div', null, 'chart');
   trendCard.appendChild(trendHost);
   main.appendChild(trendCard);
 
-  requestAnimationFrame(() => {
-    if (n) {
-      hypnogram(hypHost, n.timeline, { from: Date.parse(n.bedtime), to: Date.parse(n.wakeTime) });
-    } else {
-      hypnogram(hypHost, []);
+  if (d.napsWeek.length) {
+    const napCard = card('Naps this week');
+    for (const nap of d.napsWeek) {
+      const row = el('div', null, 'nap-row');
+      row.append(el('b', hhmm(nap.hours)),
+        el('span', `${prettyDate(new Date(nap.day + tzMs()).toISOString().slice(0, 10))} at ${timeOf(nap.start)} · repaid ${nap.debtCreditHours}h`));
+      napCard.appendChild(row);
     }
+    main.appendChild(napCard);
+  }
+
+  const patCard = card('This month’s pattern', d.pattern.available
+    ? `${d.pattern.nights} nights measured` : null);
+  if (!d.pattern.available) {
+    patCard.appendChild(el('p', d.pattern.note, 'empty-state'));
+  } else {
+    patCard.appendChild(el('p', d.pattern.sentence, 'pattern-sentence'));
+    const grid = el('div', null, 'pattern-grid');
+    for (const m of d.pattern.metrics) {
+      const item = el('div', null, `pattern-metric ${m.status}`);
+      item.append(el('b', m.value === null ? '—' : `${m.value}${m.unit}`),
+        el('small', `${m.label} · typical ${m.typical[0]}–${m.typical[1]}${m.unit}`));
+      grid.appendChild(item);
+    }
+    patCard.appendChild(grid);
+    methodNote(patCard, d.pattern);
+  }
+  main.appendChild(patCard);
+
+  requestAnimationFrame(() => {
+    if (n && n.timeline && n.timeline.length) {
+      hypnogram(hypHost, n.timeline, { from: Date.parse(n.bedtime), to: Date.parse(n.wakeTime) });
+    } else hypnogram(hypHost, []);
+
     const height = window.innerWidth < 560 ? 160 : 200;
-    const css = (x) => getComputedStyle(document.documentElement).getPropertyValue(x).trim();
-    barChart(trendHost, {
-      points: d.trend.map((x) => ({ t: x.t, v: x.hoursAsleep })),
-      unit: 'h', precision: 1, bucketMs: DAY_MS, label: 'Asleep',
-      goal: d.goalHours, color: css('--series-5'),
+    lineChart(tempHost, {
+      points: d.temperature.points, unit: d.temperature.unit, precision: 2,
+      bucketMs: DAY_MS, label: 'Deviation', diverging: true,
+      color: seriesOf('heart'),
+      refBand: d.temperature.band,
+    }, height);
+
+    stackedChart(trendHost, {
+      points: d.trend.map((r) => ({
+        t: r.t,
+        parts: r.stageHours
+          ? { DEEP: r.stageHours.deep || 0, REM: r.stageHours.rem || 0, LIGHT: r.stageHours.light || 0, AWAKE: r.stageHours.awake || 0 }
+          : {},
+      })),
+      keys: ['DEEP', 'REM', 'LIGHT', 'AWAKE'],
+      labels: { DEEP: 'Deep', REM: 'REM', LIGHT: 'Light', AWAKE: 'Awake' },
+      colors: { DEEP: css('--ord-6'), REM: css('--ord-4'), LIGHT: css('--ord-2'), AWAKE: css('--ord-1') },
+      unit: 'h', precision: 1, bucketMs: DAY_MS, goal: d.goalHours,
     }, height);
   });
+}
+
+// ---------------------------------------------------------------------------
+// TRAIN — session first
+// ---------------------------------------------------------------------------
+
+function sessionStats(s) {
+  const stats = el('div', null, 'session-stats');
+  const items = [
+    ['Effort', s.load === null ? '—' : String(Math.round(s.load))],
+    ['Strain', s.strain === null ? '—' : s.strain.toFixed(1)],
+    ['Avg HR', s.averageHeartRate ? `${s.averageHeartRate}` : '—'],
+    ['Burned', s.calories === null || s.calories === undefined ? '—' : `${fmtNumber(s.calories, 0)} kcal`],
+    ['HR recovery', s.heartRateRecovery ? `−${s.heartRateRecovery.dropBpm} bpm` : '—'],
+  ];
+  for (const [label, value] of items) {
+    const stat = el('div', null, 'stat');
+    stat.append(el('b', value), el('small', label));
+    stats.appendChild(stat);
+  }
+  return stats;
+}
+
+function renderTrain(d) {
+  const main = $('view');
+  main.replaceChildren();
+  main.className = 'room';
+
+  // --- latest session hero --------------------------------------------------
+  const hero = card('Latest session', d.sessionsLimitation);
+  hero.classList.add('span-2');
+  if (!d.latestSession) {
+    hero.appendChild(el('p', 'No sessions in the last two weeks — the next workout lands here.', 'empty-state'));
+  } else {
+    const s = d.latestSession;
+    const wrap = el('div', null, 'session-hero');
+    const title = el('div', null, 'session-title');
+    title.append(el('strong', s.label),
+      el('span', null, `kind-chip ${s.kind}`),
+      el('span', `${prettyDate(new Date(s.start + tzMs()).toISOString().slice(0, 10))} ${timeOf(s.start)}–${timeOf(s.end)} · ${s.durationMinutes} min`, 'when'));
+    title.querySelector('.kind-chip').textContent = s.kind === 'detected' ? 'detected' : 'recorded';
+    wrap.appendChild(title);
+    wrap.appendChild(sessionStats(s));
+    const zonesHost = el('div');
+    wrap.appendChild(zonesHost);
+    hero.appendChild(wrap);
+    requestAnimationFrame(() => zoneBars(zonesHost, d.zoneTable, s.zoneMinutes || {}));
+  }
+  const cd = el('span', null, `countdown-chip ${d.countdown.state}`);
+  cd.append(document.createTextNode(d.countdown.state === 'ready' ? 'Recovered — ' : 'Recovering — '),
+    el('b', d.countdown.state === 'ready' ? 'ready for a hard session' : `${d.countdown.hoursRemaining}h to full`));
+  cd.title = d.countdown.method || '';
+  hero.appendChild(cd);
+  main.appendChild(hero);
+
+  // --- corridor -------------------------------------------------------------
+  const corr = card('Load corridor', 'Your 7-day load threading the healthy band');
+  if (d.corridor.state) {
+    corr.head.appendChild(el('span', d.corridor.state, `status-chip ${d.corridor.state}`));
+  }
+  const corrHost = el('div', null, 'chart');
+  corr.appendChild(corrHost);
+  methodNote(corr, d.corridor);
+  main.appendChild(corr);
+
+  // --- fitness / fatigue / form ---------------------------------------------
+  const lm = card('Fitness & fatigue', d.loadModel.current
+    ? `Form ${d.loadModel.current.form > 0 ? '+' : ''}${d.loadModel.current.form}`
+    : 'Building history');
+  if (d.loadModel.current) {
+    lm.head.appendChild(el('span', d.loadModel.current.status, `status-chip ${d.loadModel.current.status}`));
+  }
+  const lmHost = el('div', null, 'chart');
+  lm.appendChild(lmHost);
+  methodNote(lm, d.loadModel);
+  main.appendChild(lm);
+
+  // --- season ---------------------------------------------------------------
+  const season = card('Season', 'Daily load · tap a day to open it');
+  const seasonHost = el('div');
+  season.appendChild(seasonHost);
+  const weeksHost = el('div', null, 'chart');
+  season.append(el('p', 'Weekly load · 8 weeks', 'card-sub'), weeksHost);
+  main.appendChild(season);
+
+  // --- sessions list (recorded + detected, with their insights) -------------
+  const list = card('Sessions · 14 days', d.sessionsMethod);
+  if (!d.sessions.length) list.appendChild(el('p', 'Nothing yet.', 'empty-state'));
+  const ol = el('ol', null, 'activity-list');
+  for (const s of d.sessions.slice(0, 12)) {
+    const row = el('li', null, 'activity-row');
+    const head = el('div', null, 'activity-main');
+    const left = el('div');
+    const strong = el('strong', `${s.label} `);
+    strong.appendChild(el('span', s.kind === 'detected' ? 'detected' : 'recorded', `kind-chip ${s.kind}`));
+    left.appendChild(strong);
+    head.append(left,
+      el('span', `${prettyDate(new Date(s.start + tzMs()).toISOString().slice(0, 10))} · ${timeOf(s.start)} · ${s.durationMinutes} min`));
+    row.appendChild(head);
+    const stats = el('div', null, 'activity-stats');
+    for (const [label, value] of [
+      ['Effort', s.load === null ? '—' : String(Math.round(s.load))],
+      ['Avg', s.averageHeartRate ? `${s.averageHeartRate} bpm` : '—'],
+      ['Max', s.maxHeartRate ? `${s.maxHeartRate} bpm` : '—'],
+      ['Burned', s.calories === null || s.calories === undefined ? '—' : `${fmtNumber(s.calories, 0)} kcal`],
+      ['HRR', s.heartRateRecovery ? `−${s.heartRateRecovery.dropBpm}` : '—'],
+    ]) {
+      const stat = el('span');
+      stat.append(el('small', label), document.createTextNode(value));
+      stats.appendChild(stat);
+    }
+    row.appendChild(stats);
+    ol.appendChild(row);
+  }
+  list.appendChild(ol);
+  main.appendChild(list);
+
+  // --- records --------------------------------------------------------------
+  const rec = card('Personal records');
+  const recList = el('div', null, 'record-list');
+  for (const r of d.records) {
+    const row = el('div', null, 'record-row');
+    row.append(el('span', r.label, 'label'), el('b', `${fmtNumber(r.value, 0)} ${r.unit}`),
+      el('span', r.atMs ? `${new Date(r.atMs + tzMs()).toISOString().slice(0, 10)} · ${r.window}` : r.window, 'window'));
+    recList.appendChild(row);
+  }
+  rec.appendChild(recList);
+  main.appendChild(rec);
+
+  // --- strength -------------------------------------------------------------
+  const st = card('Strength log', 'Logged sets, beside cardio — never summed into it');
+  const logBtn = el('button', 'Log strength', 'btn btn-accent');
+  logBtn.type = 'button';
+  logBtn.addEventListener('click', () => $('strength-dialog').showModal());
+  st.head.appendChild(logBtn);
+  if (!d.strength.entries.length) {
+    st.appendChild(el('p', 'No entries in the last 60 days.', 'empty-state'));
+  } else {
+    for (const e2 of d.strength.entries.slice(0, 10)) {
+      const row = el('div', null, 'nap-row');
+      row.append(el('b', e2.exercise),
+        el('span', `${new Date(e2.ts_ms + tzMs()).toISOString().slice(0, 10)} · ${e2.sets}×${e2.reps} @ ${e2.weight_kg}kg · ${fmtNumber(e2.volume_kg, 0)}kg volume · index ${e2.muscularIndex}`));
+      const del = el('button', '×', 'dialog-close');
+      del.type = 'button';
+      del.setAttribute('aria-label', `Delete ${e2.exercise}`);
+      del.addEventListener('click', async () => {
+        await sendJson(`${api('strength')}?id=${e2.id}`, undefined, 'DELETE');
+        load();
+      });
+      row.appendChild(del);
+      st.appendChild(row);
+    }
+  }
+  methodNote(st, { method: d.strength.method });
+  main.appendChild(st);
+
+  requestAnimationFrame(() => {
+    const height = window.innerWidth < 560 ? 170 : 210;
+    corridorChart(corrHost, { series: d.corridor.series.filter((x) => x.t >= Date.now() - 90 * DAY_MS), bucketMs: DAY_MS }, height);
+    // Fitness emphasized, fatigue thin — same load scale, one axis.
+    const pts = d.loadModel.series;
+    overlayChart(lmHost, {
+      a: { label: 'Fitness (42d)', points: pts.map((x) => ({ t: x.t, v: x.fitness })) },
+      b: { label: 'Fatigue (7d)', points: pts.map((x) => ({ t: x.t, v: x.fatigue })) },
+      unit: 'TRIMP', precision: 0, bucketMs: DAY_MS, color: seriesOf('cardioLoad'),
+    }, height);
+    heatCalendar(seasonHost, {
+      cells: d.season.cells.slice(-56), thresholds: d.season.thresholds,
+      unit: 'TRIMP', precision: 0, offsetMs: tzMs(),
+    }, (dateStr) => jumpToDay(dateStr));
+    barChart(weeksHost, {
+      points: d.weeklyLoad.map((w) => ({ t: w.t, v: w.load })),
+      unit: 'TRIMP', precision: 0, bucketMs: 7 * DAY_MS, label: 'Weekly load',
+      color: seriesOf('cardioLoad'),
+    }, window.innerWidth < 560 ? 130 : 160);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// TRENDS — compare first
+// ---------------------------------------------------------------------------
+
+function renderTrends(d) {
+  const main = $('view');
+  main.replaceChildren();
+  main.className = 'room';
+
+  // --- compare workbench ----------------------------------------------------
+  const cmp = card('Compare days', d.compare.method);
+  cmp.classList.add('span-2');
+
+  const bench = el('div', null, 'bench');
+  const dateA = document.createElement('input');
+  dateA.type = 'date';
+  dateA.value = d.compare.a.date;
+  dateA.max = todayStr();
+  dateA.className = 'bench-date';
+  dateA.setAttribute('aria-label', 'Day A');
+  dateA.addEventListener('change', () => {
+    if (dateA.value) { state.compare.a = dateA.value; load(); }
+  });
+  bench.appendChild(dateA);
+  bench.appendChild(el('span', 'vs', 'vs'));
+
+  const bSel = document.createElement('select');
+  bSel.setAttribute('aria-label', 'Day B');
+  const wd = new Date(dateA.value).toLocaleDateString([], { weekday: 'long' });
+  for (const [v, label] of [
+    ['typical', `Typical ${wd}`],
+    [shiftDate(d.compare.a.date, -1), 'Day before'],
+    [shiftDate(d.compare.a.date, -7), 'Same day last week'],
+    ['pick', 'Pick a date…'],
+  ]) {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = label;
+    bSel.appendChild(o);
+  }
+  bSel.value = ['typical'].includes(state.compare.b) ? state.compare.b
+    : [shiftDate(d.compare.a.date, -1), shiftDate(d.compare.a.date, -7)].includes(state.compare.b)
+      ? state.compare.b : 'pick';
+  const dateB = document.createElement('input');
+  dateB.type = 'date';
+  dateB.max = todayStr();
+  dateB.hidden = bSel.value !== 'pick';
+  if (bSel.value === 'pick' && state.compare.b !== 'typical') dateB.value = state.compare.b;
+  dateB.setAttribute('aria-label', 'Custom day B');
+  bSel.addEventListener('change', () => {
+    if (bSel.value === 'pick') { dateB.hidden = false; return; }
+    state.compare.b = bSel.value;
+    load();
+  });
+  dateB.addEventListener('change', () => {
+    if (dateB.value) { state.compare.b = dateB.value; load(); }
+  });
+  bench.append(bSel, dateB);
+  bench.appendChild(segmented([['heart-rate', 'Heart rate'], ['steps', 'Steps']], d.compare.metric,
+    (v) => { state.compare.metric = v; load(); }));
+  cmp.appendChild(bench);
+
+  const cmpHost = el('div', null, 'chart');
+  cmp.appendChild(cmpHost);
+
+  // A-vs-B numbers under the canvas.
+  const bm = d.compare.b ? d.compare.b.metrics : null;
+  const am = d.compare.a.metrics;
+  const table = el('div', null, 'bench-table');
+  table.append(el('span', '', 'h'), el('span', prettyDate(d.compare.a.date), 'h'),
+    el('span', d.compare.b ? prettyDate(d.compare.b.date) : `typical ${wd}`, 'h'));
+  const rows = [
+    ['Strain', (m) => (m.strain === null ? '—' : m.strain.toFixed(1))],
+    ['Steps', (m) => fmtNumber(m.steps, 0)],
+    ['Zone min', (m) => fmtNumber(m.activeZoneMinutes, 0)],
+    ['Sleep', (m) => hhmm(m.sleepHours)],
+    ['Resting HR', (m) => fmtNumber(m.restingHeartRate, 0)],
+    ['HRV', (m) => fmtNumber(m.hrv, 0)],
+  ];
+  for (const [label, fmt] of rows) {
+    table.append(el('span', label, 'm'), el('span', fmt(am), 'n'),
+      el('span', bm ? fmt(bm) : '—', `n${bm ? '' : ' ghosted'}`));
+  }
+  cmp.appendChild(table);
+  main.appendChild(cmp);
+
+  // --- verdicts -------------------------------------------------------------
+  const ver = card('90 vs 365 days', d.verdicts.method);
+  const grid = el('div', null, 'verdict-grid');
+  for (const m of d.verdicts.metrics.filter((x) => x.available)) {
+    const item = el('div', null, 'verdict');
+    const arrow = el('span', m.direction === 'up' ? '↑' : m.direction === 'down' ? '↓' : '→',
+      `arrow${m.good === true ? ' good' : m.good === false ? ' bad' : ''}`);
+    item.appendChild(arrow);
+    item.append(el('div', m.label, 'signal-label'));
+    const v = el('div', null, 'v');
+    v.textContent = `${fmtNumber(m.value, m.id === 'sleep' ? 1 : 0)} ${m.unit}`;
+    item.appendChild(v);
+    const spark = el('div', null, 'spark');
+    item.appendChild(spark);
+    requestAnimationFrame(() => sparkline(spark, m.spark, css('--axis')));
+    grid.appendChild(item);
+  }
+  if (!grid.children.length) ver.appendChild(el('p', 'Verdicts need 90 days of history.', 'empty-state'));
+  else ver.appendChild(grid);
+  main.appendChild(ver);
+
+  // --- heat calendar --------------------------------------------------------
+  const heat = card('Eight weeks', `${d.heat.label} · darker is more · tap a day`);
+  heat.head.appendChild(segmented(
+    d.heatOptions.map((t) => [t, { steps: 'Steps', sleep: 'Sleep', 'active-zone-minutes': 'AZM' }[t] || t]),
+    d.heat.type, (v) => { state.compare.heat = v; load(); },
+  ));
+  const heatHost = el('div');
+  heat.appendChild(heatHost);
+  main.appendChild(heat);
+
+  // --- correlations ---------------------------------------------------------
+  const corr = card('What moves what', d.correlations.method);
+  if (!d.correlations.cards.length) {
+    corr.appendChild(el('p', 'No associations strong enough to report yet — that is a finding too.', 'empty-state'));
+  } else {
+    for (const c of d.correlations.cards) {
+      const item = el('div', null, 'insight-card');
+      const delta = c.delta > 0 ? `+${c.delta}` : String(c.delta);
+      item.append(
+        el('div', 'association', 'insight-kind'),
+        el('div', `${c.xLabel}: ${c.yLabel} averages ${fmtNumber(c.aboveMean, 2)} ${c.unit} vs ${fmtNumber(c.belowMean, 2)} ${c.unit} (${delta} ${c.unit})`, 'insight-text'),
+        el('div', `r ${c.r} over ${c.n} days · associated, not causal`, 'insight-sub'),
+      );
+      corr.appendChild(item);
+    }
+  }
+  main.appendChild(corr);
+
+  // --- weekly report --------------------------------------------------------
+  const wk = card('This week', d.weeklyReport.method);
+  const wkRows = el('div', null, 'report-rows');
+  for (const r of d.weeklyReport.rows) {
+    const row = el('div', null, 'report-row');
+    const deltaText = r.deltaPercent === null ? '' : `${r.deltaPercent > 0 ? '+' : ''}${r.deltaPercent}%`;
+    row.append(el('span', r.label, 'label'),
+      el('b', `${fmtNumber(r.value, r.unit === 'h' ? 2 : 0)} ${r.unit}`),
+      el('span', deltaText, `delta${r.good === true ? ' good' : r.good === false ? ' bad' : ''}`));
+    wkRows.appendChild(row);
+  }
+  wk.appendChild(wkRows);
+  if (d.weeklyReport.balance) {
+    const chip = el('span', `${d.weeklyReport.balance.zone} · ${d.weeklyReport.balance.ratio}× capacity`,
+      `status-chip balance-chip ${d.weeklyReport.balance.zone === 'optimal' ? 'productive' : d.weeklyReport.balance.zone === 'overreaching' ? 'overreaching' : 'detraining'}`);
+    wk.appendChild(chip);
+  }
+  main.appendChild(wk);
+
+  requestAnimationFrame(() => {
+    const height = window.innerWidth < 560 ? 190 : 240;
+    const aColor = d.compare.metric === 'steps' ? seriesOf('steps') : seriesOf('heart');
+    let bSeries = null;
+    if (d.compare.b) {
+      bSeries = { label: prettyDate(d.compare.b.date), points: d.compare.b.curve };
+    } else if (d.compare.typical) {
+      const [y, m2, dd] = d.compare.a.date.split('-').map(Number);
+      const base = Date.UTC(y, m2 - 1, dd) - tzMs();
+      bSeries = {
+        label: `typical ${wd}`,
+        points: d.compare.typical.points.map((p) => ({
+          t: base + p.hour * 3600000, v: p.v, p25: p.p25, p75: p.p75,
+        })),
+      };
+    }
+    overlayChart(cmpHost, {
+      a: { label: prettyDate(d.compare.a.date), points: d.compare.a.curve },
+      b: bSeries,
+      unit: d.compare.metric === 'steps' ? 'steps' : 'bpm',
+      precision: 0,
+      bucketMs: d.compare.b && d.compare.metric !== 'steps' ? 120000 : 3600000,
+      color: aColor,
+    }, height);
+    heatCalendar(heatHost, { ...d.heat, offsetMs: tzMs() }, (dateStr) => jumpToDay(dateStr));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// YOU — the arc
+// ---------------------------------------------------------------------------
+
+function renderYou(d) {
+  const main = $('view');
+  main.replaceChildren();
+  main.className = 'room';
+
+  // Fitness age hero: the existing transparent estimator, plus its 12-month arc.
+  const fa = card('Fitness age', `Recent ${d.fitnessAge.coverage.recentWindowDays} complete days · ${d.fitnessAge.coverage.confidence} confidence`);
+  fa.classList.add('span-2');
+  const hero = el('div', null, 'debt-hero');
+  if (d.fitnessAge.estimate === null) {
+    hero.append(el('b', '—'), el('div', `Building history — ${d.fitnessAge.coverage.availableSignals} of ${d.fitnessAge.coverage.requiredSignals} signals ready`, 'sub'));
+  } else {
+    hero.append(el('b', String(d.fitnessAge.estimate)),
+      el('div', d.fitnessAge.deltaYears === 0
+        ? `in line with profile age ${d.fitnessAge.actualAge}`
+        : `${Math.abs(d.fitnessAge.deltaYears)} year${Math.abs(d.fitnessAge.deltaYears) === 1 ? '' : 's'} ${d.fitnessAge.direction} than profile age ${d.fitnessAge.actualAge}`, 'sub'));
+  }
+  fa.appendChild(hero);
+  const arcHost = el('div', null, 'chart');
+  fa.appendChild(arcHost);
+  const factors = el('div', null, 'fitness-factor-grid');
+  for (const factor of d.fitnessAge.factors) {
+    const item = el('article', null, `fitness-factor ${factor.status}`);
+    item.appendChild(el('div', factor.label, 'signal-label'));
+    item.appendChild(el('div', factor.available ? `${factor.value} ${factor.unit}` : '—', 'fitness-factor-value'));
+    item.appendChild(el('div', factor.detail, 'signal-detail'));
+    factors.appendChild(item);
+  }
+  fa.appendChild(factors);
+  methodNote(fa, d.fitnessAge);
+  main.appendChild(fa);
+
+  // Resilience level track.
+  const res = card('Resilience', 'A slow 14-day trait, not a daily mood');
+  if (d.resilience.level === null) {
+    res.appendChild(el('p', `Needs ${d.resilience.requiredDays} covered days in the last 14 — have ${d.resilience.coveredDays}.`, 'empty-state'));
+  } else {
+    const track = el('div', null, 'level-track');
+    d.resilience.levels.forEach((_, i) => {
+      track.appendChild(el('span', null, `level-step${i <= d.resilience.levelIndex ? ' on' : ''}`));
+    });
+    res.appendChild(track);
+    const names = el('div', null, 'level-names');
+    names.append(el('span', d.resilience.levels[0]), el('span', d.resilience.level), el('span', d.resilience.levels[4]));
+    res.appendChild(names);
+  }
+  methodNote(res, d.resilience);
+  main.appendChild(res);
+
+  // Radar history.
+  const radar = card('Symptom radar · 14 mornings', d.radar.today && d.radar.today.level !== 'unavailable'
+    ? `today: ${d.radar.today.level === 'none' ? 'no signs' : `${d.radar.today.level} signs`}` : 'not enough vitals yet');
+  const strip = el('div', null, 'radar-strip');
+  for (const day of d.radar.history.slice(-14)) {
+    const cell = el('span', null, `radar-day ${day.level === 'unavailable' ? 'none' : day.level}`);
+    cell.title = `${new Date(day.t + tzMs()).toISOString().slice(0, 10)} — ${day.level === 'unavailable' ? 'not measured' : day.level === 'none' ? 'no signs' : `${day.level} signs (${day.flagged} signals)`}`;
+    strip.appendChild(cell);
+  }
+  radar.appendChild(strip);
+  main.appendChild(radar);
+
+  // Quarterly review.
+  const q = card('Quarterly review', d.quarterly.method);
+  const qRows = el('div', null, 'report-rows');
+  for (const r of d.quarterly.rows) {
+    const row = el('div', null, 'report-row');
+    const deltaText = r.delta === null ? '' : `${r.delta > 0 ? '+' : ''}${r.delta} ${r.unit}`;
+    row.append(el('span', r.label, 'label'),
+      el('b', `${fmtNumber(r.value, r.unit === 'h' ? 2 : r.unit === 'kg' || r.unit === 'ml/kg/min' ? 1 : 0)} ${r.unit}`),
+      el('span', deltaText, `delta${r.good === true ? ' good' : r.good === false ? ' bad' : ''}`));
+    qRows.appendChild(row);
+  }
+  q.appendChild(qRows);
+  main.appendChild(q);
+
+  // Badges.
+  const bd = card('Milestones', `${d.badges.earnedCount} earned · lifetime totals from the whole history`);
+  for (const b of d.badges.badges) {
+    const row = el('div', null, 'badge-row');
+    row.append(el('span', `${b.label} · ${fmtNumber(b.total, 0)}${b.unit ? ` ${b.unit}` : ''}`, 'badge-name'));
+    const earned = el('div', null, 'badge-earned');
+    for (const e2 of b.earned) earned.appendChild(el('span', e2.label, 'badge-pip'));
+    row.appendChild(earned);
+    if (b.next) {
+      const next = el('div', null, 'badge-next');
+      const track = el('div', null, 'badge-track');
+      const fill = el('div', null, 'badge-fill');
+      fill.style.width = `${Math.min(100, b.next.progress * 100)}%`;
+      track.appendChild(fill);
+      next.append(track, el('div', `next: ${b.next.label} · ${Math.round(b.next.progress * 100)}%`, 'badge-sub'));
+      row.appendChild(next);
+    }
+    bd.appendChild(row);
+  }
+  methodNote(bd, d.badges);
+  main.appendChild(bd);
+
+  requestAnimationFrame(() => {
+    lineChart(arcHost, {
+      points: d.fitnessAgeArc.map((p) => ({ t: p.t, v: p.estimate })),
+      unit: 'yrs', precision: 0, bucketMs: 30 * DAY_MS, label: 'Fitness age',
+      connectGaps: true, color: seriesOf('heart'),
+    }, window.innerWidth < 560 ? 140 : 170);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Calendar overlay — tap the date, land anywhere
+// ---------------------------------------------------------------------------
+
+async function openCalendar() {
+  const dlg = $('calendar-dialog');
+  state.calMonth = state.date.slice(0, 7);
+  await renderCalendar();
+  dlg.showModal();
+}
+
+async function renderCalendar() {
+  const grid = $('cal-grid');
+  const [y, m] = state.calMonth.split('-').map(Number);
+  $('cal-title').textContent = new Date(Date.UTC(y, m - 1, 1))
+    .toLocaleDateString([], { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  grid.replaceChildren();
+  for (const dow of ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']) grid.appendChild(el('span', dow, 'cal-dow'));
+
+  let days = [];
+  try {
+    days = (await getJson(`${api('screen/calendar')}?month=${state.calMonth}&tz=${tzMs()}`)).days;
+  } catch { /* the grid still renders; dots are decoration */ }
+  const richness = new Map(days.map((x) => [new Date(x.t + tzMs()).toISOString().slice(0, 10), x]));
+
+  const first = new Date(Date.UTC(y, m - 1, 1));
+  const pad = (first.getUTCDay() + 6) % 7;
+  for (let i = 0; i < pad; i++) grid.appendChild(el('span'));
+  const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${state.calMonth}-${String(day).padStart(2, '0')}`;
+    const b = el('button', String(day), 'cal-day');
+    b.type = 'button';
+    const info = richness.get(dateStr);
+    if (dateStr > todayStr()) b.disabled = true;
+    if (dateStr === todayStr()) b.classList.add('today');
+    if (dateStr === state.date) b.classList.add('picked');
+    if (info && (info.hasSteps || info.hasSleep)) b.appendChild(el('span', null, 'dot'));
+    if (info && info.sessions) b.classList.add('session');
+    b.addEventListener('click', () => {
+      $('calendar-dialog').close();
+      state.date = dateStr;
+      renderDayBar();
+      load();
+    });
+    grid.appendChild(b);
+  }
+}
+
+function shiftCalMonth(delta) {
+  const [y, m] = state.calMonth.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + delta, 1));
+  state.calMonth = d.toISOString().slice(0, 7);
+  renderCalendar();
 }
 
 // ---------------------------------------------------------------------------
@@ -520,9 +1000,8 @@ function renderStatus() {
   const s = state.status;
   if (!s) return;
   $('mark').classList.toggle('live', Boolean(s.sync && s.sync.running));
-
   let label;
-  if (!s.connected) label = 'not connected';
+  if (!s.connected) label = s.demo ? 'demo data' : 'not connected';
   else if (s.sync.phase === 'tail') label = 'syncing…';
   else if (s.sync.phase === 'backfill') label = 'backfilling…';
   else if (s.sync.lastTailMs) label = `synced ${ago(s.sync.lastTailMs)}`;
@@ -540,16 +1019,13 @@ function ago(ms) {
 
 function renderDayBar() {
   const bar = $('daybar');
-  const usesDate = state.view === 'day' || state.view === 'sleep';
+  const usesDate = state.view === 'today' || state.view === 'sleep';
   bar.hidden = !usesDate;
   if (!usesDate) return;
-
   const label = $('day-label');
   label.replaceChildren();
   label.appendChild(document.createTextNode(prettyDate(state.date)));
-  label.appendChild(el('small', state.date));
-  // No stepping into the future: there is no data there and an empty screen would
-  // read as a bug rather than as tomorrow.
+  label.appendChild(el('small', `${state.date} · tap to jump`));
   $('day-next').disabled = state.date >= todayStr();
 }
 
@@ -559,31 +1035,44 @@ async function load() {
   const main = $('view');
   main.classList.add('loading');
   const tz = tzMs();
-
   try {
     let data;
-    if (state.view === 'day') {
-      data = await getJson(`${api('view/day')}?date=${state.date}&tz=${tz}`);
+    if (state.view === 'today') {
+      data = await getJson(`${api('screen/today')}?date=${state.date}&tz=${tz}`);
     } else if (state.view === 'sleep') {
-      data = await getJson(`${api('view/sleep')}?date=${state.date}&days=${state.sleepDays}&tz=${tz}`);
+      data = await getJson(`${api('screen/sleep')}?date=${state.date}&tz=${tz}`);
+    } else if (state.view === 'train') {
+      data = await getJson(`${api('screen/train')}?tz=${tz}`);
+    } else if (state.view === 'trends') {
+      const p = state.compare;
+      const a = p.a || todayStr();
+      data = await getJson(`${api('screen/trends')}?tz=${tz}&a=${a}&b=${p.b}&metric=${p.metric}&heat=${p.heat}`);
     } else {
-      data = await getJson(`${api('view/overview')}?days=${state.view === 'week' ? 7 : 30}&tz=${tz}`);
+      data = await getJson(`${api('screen/you')}?tz=${tz}`);
     }
     if (mine !== token) return;
     state.data = data;
-
-    if (state.view === 'day') renderDay(data);
-    else if (state.view === 'sleep') renderSleep(data);
-    else renderOverview(data);
+    render();
   } catch (err) {
     if (mine !== token) return;
     main.replaceChildren();
+    main.className = '';
     const c = card('Could not load');
     c.appendChild(el('div', err.message, 'notice'));
     main.appendChild(c);
   } finally {
     if (mine === token) main.classList.remove('loading');
   }
+}
+
+function render() {
+  const d = state.data;
+  if (!d) return;
+  if (state.view === 'today') renderToday(d);
+  else if (state.view === 'sleep') renderSleepScreen(d);
+  else if (state.view === 'train') renderTrain(d);
+  else if (state.view === 'trends') renderTrends(d);
+  else renderYou(d);
 }
 
 function setView(view) {
@@ -608,53 +1097,86 @@ function initEvents() {
   }
   $('day-prev').addEventListener('click', () => {
     state.date = shiftDate(state.date, -1);
-    renderDayBar(); load();
+    renderDayBar();
+    load();
   });
   $('day-next').addEventListener('click', () => {
     if (state.date >= todayStr()) return;
     state.date = shiftDate(state.date, 1);
-    renderDayBar(); load();
+    renderDayBar();
+    load();
   });
+  $('day-label').addEventListener('click', openCalendar);
+  $('cal-prev').addEventListener('click', () => shiftCalMonth(-1));
+  $('cal-next').addEventListener('click', () => shiftCalMonth(1));
+  $('calendar-dialog').addEventListener('click', (e) => {
+    if (e.target === $('calendar-dialog')) $('calendar-dialog').close();
+  });
+
   $('btn-profile').addEventListener('click', openProfile);
   $('profile-close').addEventListener('click', () => $('profile-dialog').close());
   $('profile-cancel').addEventListener('click', () => $('profile-dialog').close());
   $('profile-age').addEventListener('input', renderProfileEstimate);
   $('profile-max-hr').addEventListener('input', renderProfileEstimate);
   $('profile-form').addEventListener('submit', saveProfile);
+
+  $('strength-close').addEventListener('click', () => $('strength-dialog').close());
+  $('strength-cancel').addEventListener('click', () => $('strength-dialog').close());
+  $('strength-form').addEventListener('submit', saveStrength);
+
   $('btn-sync').addEventListener('click', async () => {
     const b = $('btn-sync');
-    b.disabled = true; b.textContent = '…';
+    b.disabled = true;
+    b.textContent = '…';
     try {
-      const r = await postJson(api('sync'));
-      // A skipped sync is a real answer, not a silent no-op: something else is
-      // already fetching, so say that rather than implying nothing happened.
+      const r = await sendJson(api('sync'));
       if (r.skipped) $('sync-state').textContent = 'already syncing…';
-      await refreshStatus(); await load();
+      await refreshStatus();
+      await load();
     } catch (e) {
       $('sync-state').textContent = e.message;
-    } finally { b.textContent = 'Sync'; b.disabled = false; }
+    } finally {
+      b.textContent = 'Sync';
+      b.disabled = false;
+    }
   });
 
   let resizeTimer;
   window.addEventListener('resize', () => {
     clearTimeout(resizeTimer);
-    // Charts are measured, not fluid, so a resize needs a redraw — debounced,
-    // because a phone rotating fires this a dozen times.
-    resizeTimer = setTimeout(() => {
-      if (!state.data) return;
-      if (state.view === 'day') renderDay(state.data);
-      else if (state.view === 'sleep') renderSleep(state.data);
-      else renderOverview(state.data);
-    }, 220);
+    resizeTimer = setTimeout(() => { if (state.data) render(); }, 220);
   });
 
   const es = new EventSource(api('stream'));
   let evtTimer;
   es.addEventListener('message', (msg) => {
-    let evt; try { evt = JSON.parse(msg.data); } catch { return; }
+    let evt;
+    try { evt = JSON.parse(msg.data); } catch { return; }
     clearTimeout(evtTimer);
     evtTimer = setTimeout(() => { refreshStatus(); if (evt.count) load(); }, 1500);
   });
+}
+
+async function saveStrength(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!form.reportValidity()) return;
+  const err = $('strength-error');
+  err.hidden = true;
+  try {
+    await sendJson(api('strength'), {
+      exercise: $('strength-exercise').value,
+      sets: Number($('strength-sets').value),
+      reps: Number($('strength-reps').value),
+      weightKg: Number($('strength-weight').value),
+    });
+    $('strength-dialog').close();
+    form.reset();
+    await load();
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+  }
 }
 
 function renderProfileEstimate() {
@@ -691,7 +1213,7 @@ async function saveProfile(event) {
   error.hidden = true;
   try {
     const maxHeartRate = $('profile-max-hr').value;
-    state.settings = await postJson(api('settings'), {
+    state.settings = await sendJson(api('settings'), {
       age: Number($('profile-age').value),
       maxHeartRate: maxHeartRate === '' ? null : Number(maxHeartRate),
     });
@@ -707,6 +1229,7 @@ async function saveProfile(event) {
 
 async function boot() {
   state.date = todayStr();
+  state.compare.a = todayStr();
   initEvents();
   renderDayBar();
   await refreshStatus();
