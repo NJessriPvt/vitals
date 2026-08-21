@@ -26,7 +26,6 @@ const state = {
   view: 'today',
   date: null,           // YYYY-MM-DD for the day-scoped rooms
   status: null,
-  settings: null,
   data: null,
   calMonth: null,       // YYYY-MM shown in the jump overlay
   compare: { b: 'typical', metric: 'heart-rate', heat: 'steps' },
@@ -1298,12 +1297,6 @@ function initEvents() {
     if (e.target === $('calendar-dialog')) $('calendar-dialog').close();
   });
 
-  $('btn-profile').addEventListener('click', openProfile);
-  $('profile-close').addEventListener('click', () => $('profile-dialog').close());
-  $('profile-cancel').addEventListener('click', () => $('profile-dialog').close());
-  $('profile-max-hr').addEventListener('input', renderProfileEstimate);
-  $('profile-form').addEventListener('submit', saveProfile);
-
   $('strength-close').addEventListener('click', () => $('strength-dialog').close());
   $('strength-cancel').addEventListener('click', () => $('strength-dialog').close());
   $('strength-form').addEventListener('submit', saveStrength);
@@ -1366,71 +1359,6 @@ async function saveStrength(event) {
   } catch (e) {
     err.textContent = e.message;
     err.hidden = false;
-  }
-}
-
-function renderProfileEstimate() {
-  const age = Number(state.settings && state.settings.age);
-  const manual = Number($('profile-max-hr').value);
-  const estimate = Number.isFinite(age) ? 220 - age : null;
-  const usingManual = $('profile-max-hr').value !== '' && Number.isFinite(manual);
-  $('profile-estimate').textContent = estimate === null ? ''
-    : `Age estimate: ${estimate} bpm · using ${usingManual ? `${manual} bpm override` : 'age estimate'}`;
-}
-
-/**
- * Age is synced from the Google account, so it is shown rather than edited — and the
- * note says which it is. Presenting the pre-sync fallback as though the account had
- * reported it would quietly make an assumption look like a measurement.
- */
-function renderProfileAge() {
-  const s = state.settings || {};
-  $('profile-age').textContent = Number.isFinite(Number(s.age)) ? `${s.age}` : '—';
-  const synced = Number(s.ageSyncedMs);
-  const when = Number.isFinite(synced) && synced > 0 ? ` · updated ${ago(synced)}` : '';
-  const note = { google: `From your Google account${when}`, demo: `From the demo profile${when}` };
-  $('profile-age-source').textContent = note[s.ageSource]
-    || 'Not synced yet — assuming 30 until your Google account reports it';
-}
-
-async function openProfile() {
-  const dialog = $('profile-dialog');
-  $('profile-error').hidden = true;
-  try {
-    state.settings = await getJson(api('settings'));
-    renderProfileAge();
-    $('profile-max-hr').value = state.settings.maxHeartRateSource === 'manual'
-      ? state.settings.maxHeartRate : '';
-    renderProfileEstimate();
-    dialog.showModal();
-  } catch (err) {
-    const error = $('profile-error');
-    error.textContent = `Could not load settings: ${err.message}`;
-    error.hidden = false;
-    dialog.showModal();
-  }
-}
-
-async function saveProfile(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  if (!form.reportValidity()) return;
-  const save = $('profile-save');
-  const error = $('profile-error');
-  save.disabled = true;
-  error.hidden = true;
-  try {
-    const maxHeartRate = $('profile-max-hr').value;
-    state.settings = await sendJson(api('settings'), {
-      maxHeartRate: maxHeartRate === '' ? null : Number(maxHeartRate),
-    });
-    $('profile-dialog').close();
-    await load();
-  } catch (err) {
-    error.textContent = err.message;
-    error.hidden = false;
-  } finally {
-    save.disabled = false;
   }
 }
 

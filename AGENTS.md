@@ -169,7 +169,8 @@ substitute zero.
 - Activity detection is heart-rate-only. It may label a session “Elevated heart
   rate”; it must not guess an activity type without movement/GPS evidence.
 - The Zone 3 entry threshold is 60% of the profile's max HR. Max HR uses `220 - age`
-  unless the user explicitly sets an override in Profile.
+  unless an override is set through `POST /api/settings` — API-only; there is no
+  profile screen in the UI.
 - **Age is READ FROM THE GOOGLE ACCOUNT, never typed in.** `GET /users/me/profile`
   returns it as whole years under the already-granted `googlehealth.profile.readonly`
   scope (`/users/me` and `/users/me/userProfile` are both 404 — only that exact path

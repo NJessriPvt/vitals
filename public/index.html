@@ -20,7 +20,6 @@
   <div class="brand"><span class="mark" id="mark" aria-hidden="true"></span> vitals</div>
   <div class="top-right">
     <span id="sync-state" class="sync-state">—</span>
-    <button id="btn-profile" class="btn" type="button">Profile</button>
     <button id="btn-sync" class="btn btn-accent" type="button">Sync</button>
   </div>
 </header>
@@ -55,34 +54,6 @@
   </div>
   <div class="cal-grid" id="cal-grid"></div>
   <p class="cal-hint">Dots mark tracked days · rings mark workouts</p>
-</dialog>
-
-<dialog id="profile-dialog" class="profile-dialog" aria-labelledby="profile-title">
-  <form id="profile-form">
-    <div class="dialog-head">
-      <div>
-        <h2 id="profile-title">Physiology profile</h2>
-        <p>Age sets your estimated max heart rate and every activity zone.</p>
-      </div>
-      <button id="profile-close" class="dialog-close" type="button" aria-label="Close profile">×</button>
-    </div>
-    <div class="field field-readonly">
-      <span>Age</span>
-      <output id="profile-age" class="field-value"></output>
-      <small id="profile-age-source" class="field-note"></small>
-    </div>
-    <label class="field">
-      <span>Max heart rate <small>optional override</small></span>
-      <input id="profile-max-hr" name="maxHeartRate" type="number" min="100" max="240"
-             inputmode="numeric" placeholder="Use age estimate">
-    </label>
-    <p id="profile-estimate" class="profile-estimate"></p>
-    <p id="profile-error" class="form-error" role="alert" hidden></p>
-    <div class="dialog-actions">
-      <button id="profile-cancel" class="btn" type="button">Cancel</button>
-      <button id="profile-save" class="btn btn-accent" type="submit">Save profile</button>
-    </div>
-  </form>
 </dialog>
 
 <dialog id="strength-dialog" class="profile-dialog" aria-labelledby="strength-title">

@@ -45,10 +45,10 @@ empty states live data gets. No real health data is published in this repository
 </tr>
 </table>
 
-<img src="docs/screenshots/profile.png" alt="The physiology profile dialog, with age shown as a read-only value from the Google account" width="300">
-
-**Profile** — age is read from your Google account, not typed in. Max heart rate is the
-one thing you can override, because a measured max beats any estimate.
+Age is read from your Google account, not typed in — there is no profile screen.
+Max heart rate defaults to the `220 − age` estimate; a measured max can still be
+set through `POST /api/settings` (`maxHeartRate`), because a measured max beats
+any estimate.
 
 ## The five rooms
 
