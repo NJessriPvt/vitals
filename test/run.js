@@ -13,16 +13,7 @@ const fs = require('fs');
 const path = require('path');
 
 // .env so a developer's tunnel settings are picked up without exporting anything.
-const envFile = path.join(__dirname, '..', '.env');
-if (fs.existsSync(envFile)) {
-  for (const line of fs.readFileSync(envFile, 'utf8').split('\n')) {
-    const m = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*)$/.exec(line);
-    if (!m) continue;
-    let v = m[2].trim();
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
-    if (!(m[1] in process.env)) process.env[m[1]] = v;
-  }
-}
+require('../lib/env').loadEnvFile(path.join(__dirname, '..', '.env'));
 
 /**
  * Storage tests need a real MySQL, which a Docker build does not have — and the
@@ -51,6 +42,7 @@ const training = require('../lib/training');
 const trends = require('../lib/trends');
 const goals = require('../lib/goals');
 const screens = require('../lib/screens');
+const sync = require('../lib/sync');
 
 let passed = 0;
 const failures = [];
@@ -69,7 +61,7 @@ const asyncTests = [];
 function testAsync(name, fn) { asyncTests.push([name, fn]); }
 
 // Async tests that need a live database; skipped when none is reachable.
-const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period", "overview reports sleep in hours, not scaled twice", "zone bands come from 220 - age and cover the range", "activity calories use the database interval rows", "fitness age integrates recent database trends", "strength log validates, stores and deletes entries", "screen payloads survive an empty database", "daily load prefers device zone minutes and marks rest days zero"]);
+const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period", "overview reports sleep in hours, not scaled twice", "zone bands come from 220 - age and cover the range", "an unsynced age reports itself as an assumption", "setProfile cannot write age, only the max HR override", "a failed profile read leaves the last known age and does not fail the sweep", "activity calories use the database interval rows", "fitness age integrates recent database trends", "strength log validates, stores and deletes entries", "screen payloads survive an empty database", "daily load prefers device zone minutes and marks rest days zero"]);
 
 // ---------------------------------------------------------------------------
 // catalog — the filter field is per record type and a wrong one is a 400
@@ -95,6 +87,19 @@ test('daily types filter on a civil date, never a timestamp', () => {
   assert.strictEqual(f,
     'daily_resting_heart_rate.date >= "2026-05-14" AND daily_resting_heart_rate.date < "2026-05-15"');
   assert.ok(!f.includes('T00:00:00Z'), 'daily filter must not carry a time');
+});
+
+test('a daily filter ending mid-day still includes that day', () => {
+  // The upper bound is exclusive and truncated to a civil date, so a tail sync
+  // with toMs = "now" (14:30 on the 15th) must ask `< "2026-05-16"` — asking
+  // `< "2026-05-15"` silently keeps every DAILY type a day stale, forever.
+  const f = catalog.timeRangeFilter(catalog.get('daily-resting-heart-rate'),
+    Date.UTC(2026, 4, 14), Date.UTC(2026, 4, 15, 14, 30));
+  assert.ok(f.endsWith('< "2026-05-16"'), f);
+  // An exact-midnight end stays exclusive: through the 14th only.
+  const g = catalog.timeRangeFilter(catalog.get('daily-resting-heart-rate'),
+    Date.UTC(2026, 4, 14), Date.UTC(2026, 4, 15));
+  assert.ok(g.endsWith('< "2026-05-15"'), g);
 });
 
 test('multi-word types use snake_case in the filter and kebab-case as the id', () => {
@@ -222,6 +227,24 @@ test('sleep: value is time ASLEEP, stages become parts, awake is excluded', () =
   assert.strictEqual(row.parts.AWAKE, 900000);
   assert.strictEqual(row.value, 9000000, 'asleep = light + deep, awake excluded');
   assert.strictEqual(row.fields.inBedMs, 8 * 3600000);
+});
+
+test('sleep accepts the LIVE field names: type and stages, not just the doc example', () => {
+  const notes = new Set();
+  const row = normalize.normalizePoint({
+    name: 'sleeps/live',
+    sleep: {
+      startTime: '2026-04-20T22:30:00Z',
+      endTime: '2026-04-21T06:30:00Z',
+      type: 'STAGES',
+      stages: [
+        { startTime: '2026-04-20T22:30:00Z', endTime: '2026-04-21T05:30:00Z', type: 'LIGHT' },
+        { startTime: '2026-04-21T05:30:00Z', endTime: '2026-04-21T06:30:00Z', type: 'AWAKE' },
+      ],
+    },
+  }, catalog.get('sleep'), notes);
+  assert.strictEqual(row.value, 7 * 3600000, 'stages under the live key still count');
+  assert.strictEqual(row.fields.sleepType, 'STAGES', 'the live `type` field is read');
 });
 
 test('sleep without stages still plots (CLASSIC records have none)', () => {
@@ -531,7 +554,7 @@ testAsync('overview reports sleep in hours, not scaled twice', async () => {
 });
 
 testAsync('zone bands come from 220 - age and cover the range', async () => {
-  await metrics.setAge(30);
+  await metrics.setAge(30, 'google');
   const maxHr = metrics.maxHeartRate(await metrics.getAge());
   assert.strictEqual(maxHr, 190);
 
@@ -548,6 +571,63 @@ testAsync('zone bands come from 220 - age and cover the range', async () => {
   // Rest carries no training load — otherwise a sedentary day outscores a workout.
   assert.strictEqual(metrics.cardioLoad({ 1: 600 }), 0);
   assert.strictEqual(metrics.cardioLoad({ 2: 10, 6: 10 }), 10 * 1 + 10 * 5);
+});
+
+/**
+ * Age drives every zone boundary, so the difference between "the account says 30"
+ * and "nobody has told us, assume 30" is the difference between a measurement and a
+ * guess. Both produce the same number; only the source says which one it is.
+ */
+testAsync('an unsynced age reports itself as an assumption', async () => {
+  await db.setSetting('age', '');
+  await db.setSetting('age_source', '');
+  await db.setSetting('age_synced_ms', '');
+
+  const before = await metrics.getProfile();
+  assert.strictEqual(before.age, metrics.DEFAULT_AGE, 'the fallback still yields a usable age');
+  assert.strictEqual(before.ageSource, 'default', 'but it must not claim to come from Google');
+  assert.strictEqual(before.ageSyncedMs, null, 'and it has never been synced');
+
+  await metrics.setAge(41, 'google');
+  const after = await metrics.getProfile();
+  assert.strictEqual(after.age, 41);
+  assert.strictEqual(after.ageSource, 'google');
+  assert.ok(after.ageSyncedMs > 0, 'a synced age records when it was read');
+  assert.strictEqual(after.estimatedMaxHeartRate, 179, 'the new age moves max HR');
+});
+
+/**
+ * Age is not a user preference any more. If setProfile still wrote it, a value typed
+ * once would outlive every sync — silently shifting the zones the whole app is built
+ * on — so the write path has to be gone, not merely hidden in the UI.
+ */
+testAsync('setProfile cannot write age, only the max HR override', async () => {
+  await metrics.setAge(30, 'google');
+  const profile = await metrics.setProfile({ age: 55, maxHeartRate: 185 });
+  assert.strictEqual(profile.age, 30, 'a patched age must be ignored, not applied');
+  assert.strictEqual(profile.ageSource, 'google');
+  assert.strictEqual(profile.maxHeartRate, 185, 'the measured override still wins');
+  assert.strictEqual(profile.maxHeartRateSource, 'manual');
+
+  // Clearing the override returns to the age estimate rather than to zero.
+  const cleared = await metrics.setProfile({ maxHeartRate: null });
+  assert.strictEqual(cleared.maxHeartRate, 190);
+  assert.strictEqual(cleared.maxHeartRateSource, 'age-estimate');
+});
+
+/**
+ * A profile read that fails must cost the sweep nothing. The alternative — letting it
+ * throw — trades a one-sweep-stale age for no heart rate at all, which is the worse
+ * failure by a wide margin.
+ */
+testAsync('a failed profile read leaves the last known age and does not fail the sweep', async () => {
+  await metrics.setAge(37, 'google');
+  const boom = () => { throw new Error('profile unavailable'); };
+  const result = await sync.syncUserProfile(boom);
+  assert.strictEqual(result, null, 'the caller learns nothing was refreshed');
+  const profile = await metrics.getProfile();
+  assert.strictEqual(profile.age, 37, 'the previous age survives');
+  assert.strictEqual(profile.ageSource, 'google');
 });
 
 // ---------------------------------------------------------------------------
@@ -936,6 +1016,24 @@ test('the battery stays inside 5–100 and drains harder on stressed hours', () 
   assert.strictEqual(noSleep.points[0].v, 55, 'no sleep data starts at the stated default, not zero');
 });
 
+test('the battery does not claim the simulated trailing hour was measured', () => {
+  const HOUR = 3600000;
+  // Stress points exist only through 14:00; the loop extends one hour past nowMs,
+  // and that unclassified hour must report known:false, not "measured".
+  const b = scores.buildBattery({
+    wakeMs: 7 * HOUR,
+    sleepRatio: 1,
+    efficiencyPercent: 92,
+    stress: { points: Array.from({ length: 14 }, (_, h) => ({ t: h * HOUR, state: h >= 8 ? 'calm' : null })) },
+    hourLoads: [],
+    nowMs: 14.5 * HOUR,
+    dayStart: 0,
+  });
+  const last = b.points[b.points.length - 1];
+  assert.strictEqual(last.t, 15 * HOUR);
+  assert.strictEqual(last.known, false, 'an hour with no observation is unknown');
+});
+
 test('weekly intensity caps a heroic day and counts only measured days', () => {
   const DAY = 86400000;
   const days = [500, 0, null, 20, 40, 0, 900].map((load, i) => ({ t: i * DAY, load }));
@@ -1275,6 +1373,17 @@ test('the weekly report balance names restoring, optimal and overreaching', () =
   assert.strictEqual(trends.buildReport({ ...current, loadTotal: 1000 }, priors, { fitness: 100 }).balance.zone, 'overreaching');
   assert.strictEqual(trends.buildReport(current, priors, { fitness: 2 }).balance, null,
     'no meaningful fitness, no balance claim');
+});
+
+test('a partial week is judged against its elapsed days, not a full seven', () => {
+  // Two days into the week with 200 TRIMP against fitness 100: per elapsed day
+  // that is optimal (200 / (100×2) = 1.0). Judged against a full week's capacity
+  // it would read 0.29 — "restoring" every Monday and Tuesday by arithmetic alone.
+  const current = { sleepAvg: 7.5, rhrAvg: 56, hrvAvg: 52, loadTotal: 200, stepsAvg: 9000, azmAvg: 30 };
+  const priors = [{ ...current }, { ...current }, { ...current }];
+  const partial = trends.buildReport(current, priors, { fitness: 100, elapsedDays: 2 });
+  assert.strictEqual(partial.balance.zone, 'optimal');
+  assert.strictEqual(partial.balance.elapsedDays, 2);
 });
 
 // ---------------------------------------------------------------------------

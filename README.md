@@ -4,7 +4,8 @@ Your own health dashboard. It syncs the **Google Health API** into the fleet's
 MySQL store and turns it into five screens — Today, Sleep, Train, Trends, You —
 with near-real-time updates via webhooks. Mobile-web first, laptop-ready.
 
-Zero dependencies. Node built-ins and vanilla JS, no build step, no `node_modules`.
+One dependency (`mysql2`). Otherwise Node built-ins and vanilla JS — no framework,
+no build step, no bundler.
 
 ```
 npm run demo     # start with 180 days of generated data, no credentials needed
@@ -13,6 +14,48 @@ npm test         # pure + MySQL-backed tests
 ```
 
 Then open <http://localhost:4330>.
+
+## What it looks like
+
+Every screenshot below is `npm run demo` — generated data through the real
+normalize → store → query path, so the layouts, scales and empty states are the ones
+live data gets. No real health data is published in this repository.
+
+![The Today screen: readiness ring, energy forecast, activity rings and today's vitals](docs/screenshots/today.png)
+
+*Today — readiness against your own 28-day baselines, every contributor shown, with
+the strain target, energy forecast and the day's rings.*
+
+<details>
+<summary><b>The other four screens</b></summary>
+
+![The Sleep screen: hypnogram, sleep need and debt, overnight heart-rate dip and night temperature](docs/screenshots/sleep.png)
+
+*Sleep — the night first: hypnogram, learned need against rolling debt, overnight HR
+dip, night temperature against your own band, and the month's pattern.*
+
+![The Train screen: latest session with zone breakdown, load corridor, fitness and fatigue, season heat calendar and personal records](docs/screenshots/train.png)
+
+*Train — typed workouts merged with HR-detected sessions, the healthy load corridor,
+fitness/fatigue/form, a season heat calendar, and the strength log kept beside cardio
+load rather than summed into it.*
+
+![The Trends screen: day-versus-day compare workbench and long-range trend verdicts](docs/screenshots/trends.png)
+
+*Trends — compare any day with any other (or with your typical same-weekday band) on
+a single indexed axis, plus 90-vs-365-day verdicts.*
+
+![The You screen: fitness age with a 12-month arc, resilience, quarterly review and milestones](docs/screenshots/you.png)
+
+*You — the transparent fitness age with each bounded contribution named, a slow
+resilience level, a quarterly review and lifetime milestones.*
+
+![The physiology profile dialog, showing age as a read-only value sourced from the Google account](docs/screenshots/profile.png)
+
+*Profile — age is read from your Google account, not typed in. Max heart rate is the
+one thing you can override, because a measured max beats any estimate.*
+
+</details>
 
 ## The five rooms
 
@@ -151,7 +194,9 @@ raw bytes before anything is acted on.
 | Variable | Default | Meaning |
 |---|---|---|
 | `PORT` / `HOST` | `4330` / `127.0.0.1` | listen address |
-| `STATE_DIR` | `./state` | where `vitals.db` lives |
+| `MYSQL_HOST` / `MYSQL_PORT` | `127.0.0.1` / `3306` | database address |
+| `MYSQL_USER` / `MYSQL_PASSWORD` | `vitals` / — | database credentials |
+| `MYSQL_DATABASE` | `vitals` | database name |
 | `GOOGLE_CLIENT_ID` / `_SECRET` | — | OAuth client |
 | `VITALS_BASE_URL` | `http://localhost:4330` | public origin; the redirect URI derives from it |
 | `VITALS_WEBHOOK_SECRET` | — | shared secret for the webhook endpoint |
@@ -196,6 +241,6 @@ heuristic — recording every guess as a visible warning. When a hint turns out 
 `normalize.renormalize()` fixes history from the raw rows instead of forcing a
 re-sync of data that may have aged out upstream.
 
-**Charts never wait on Google.** Everything the dashboard renders comes from SQLite.
+**Charts never wait on Google.** Everything the dashboard renders comes from MySQL.
 The sync loop is the only thing that talks upstream, so a slow, rate-limited or
 disconnected Google leaves the dashboard fast and answerable.

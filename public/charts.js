@@ -612,105 +612,6 @@ export function stackedChart(host, spec, height = 220) {
   return { redraw: () => stackedChart(host, spec, height) };
 }
 
-// --- multi-series line (the compare view) -----------------------------------
-
-/**
- * Several metrics on ONE axis, indexed to 100 at the first point.
- * Never a second y-scale: the alignment of two scales is arbitrary, so a dual axis
- * invents a correlation that isn't in the data.
- */
-export function compareChart(host, series, spec, height = 260) {
-  const t = tokens();
-  const live = series.filter((s) => s.points.some((p) => p.v !== null));
-  if (!live.length) return empty(host, height);
-
-  const { svg, width, plotH } = frame(host, height);
-  const tip = makeTooltip(host);
-
-  // Index against each series' OWN MEAN over the range, not its first point. A
-  // first-point base makes the whole comparison hostage to one day: an unusually
-  // long walk on day 1 pushes that series' entire line below 100 and invents a
-  // downward trend that isn't there. Against the mean, 100 reads as "typical for
-  // this metric in this range", which is the comparison a reader actually wants.
-  const indexed = live.map((s) => {
-    const vals = s.points.map((p) => p.v).filter((v) => v !== null && Number.isFinite(v));
-    const mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
-    const base = mean || 1;
-    return { ...s, idx: s.points.map((p) => (p.v === null ? null : (p.v / base) * 100)) };
-  });
-
-  const flat = indexed.flatMap((s) => s.idx).filter((v) => v !== null);
-  const { ticks, lo, hi } = yTicks(Math.min(...flat), Math.max(...flat));
-  const n = Math.max(...indexed.map((s) => s.points.length));
-  const xOf = (i) => PAD.left + (n === 1 ? spec0(width) : (i / (n - 1)) * (width - PAD.left - PAD.right));
-  const yOf = (v) => PAD.top + plotH - ((v - lo) / (hi - lo || 1)) * plotH;
-
-  drawGrid(svg, t, ticks, yOf, width, 0);
-
-  // Baseline at 100 — the thing every series is being compared against.
-  if (lo < 100 && hi > 100) {
-    svg.appendChild(el('line', {
-      x1: PAD.left, x2: width - PAD.right, y1: yOf(100), y2: yOf(100),
-      stroke: t.axis, 'stroke-width': 1, 'shape-rendering': 'crispEdges',
-    }));
-  }
-
-  indexed.forEach((s) => {
-    // Per-run paths again: skipping a null without starting a new subpath draws a
-    // straight line across the gap, which is a claim about days that have no data.
-    const segs = segments(s.idx.map((v) => ({ v })), (p) => p.v);
-    for (const seg of segs) {
-      if (seg.length < 2) continue;
-      svg.appendChild(el('path', {
-        d: seg.map((i, k) => `${k ? 'L' : 'M'}${xOf(i)},${yOf(s.idx[i])}`).join(''),
-        fill: 'none', stroke: s.color, 'stroke-width': 2,
-        'stroke-linejoin': 'round', 'stroke-linecap': 'round',
-      }));
-    }
-    const lastSeg = segs[segs.length - 1];
-    if (lastSeg) {
-      const lastI = lastSeg[lastSeg.length - 1];
-      svg.appendChild(el('circle', {
-        cx: xOf(lastI), cy: yOf(s.idx[lastI]), r: 4.5,
-        fill: s.color, stroke: t.surface, 'stroke-width': 2,
-      }));
-    }
-  });
-
-  drawXAxis(svg, t, indexed[0].points, xOf, spec.bucketMs, plotH);
-
-  const hair = el('line', {
-    y1: PAD.top, y2: PAD.top + plotH, stroke: t.axis, 'stroke-width': 1,
-    'shape-rendering': 'crispEdges', opacity: 0,
-  });
-  svg.appendChild(hair);
-  const overlay = el('rect', {
-    x: PAD.left, y: PAD.top, width: Math.max(1, width - PAD.left - PAD.right), height: plotH,
-    fill: 'transparent', style: 'cursor:crosshair',
-  });
-  svg.appendChild(overlay);
-
-  overlay.addEventListener('pointermove', (e) => {
-    const rect = svg.getBoundingClientRect();
-    const rel = ((e.clientX - rect.left) / rect.width) * width;
-    const ratio = (rel - PAD.left) / Math.max(1, width - PAD.left - PAD.right);
-    const i = Math.max(0, Math.min(n - 1, Math.round(ratio * (n - 1))));
-    const x = xOf(i);
-    hair.setAttribute('x1', x); hair.setAttribute('x2', x); hair.setAttribute('opacity', 1);
-    // One tooltip, every series — the pointer never has to land on a line.
-    const rows = indexed.map((s) => ({
-      color: s.color,
-      value: s.points[i] && s.points[i].v !== null
-        ? `${fmtNumber(s.points[i].v, s.precision)} ${s.unit}` : '—',
-      label: s.label,
-    }));
-    tip.show((x / width) * rect.width, PAD.top + 10, rows,
-      fmtTimeFull(indexed[0].points[i].t, spec.bucketMs));
-  });
-  overlay.addEventListener('pointerleave', () => { tip.hide(); hair.setAttribute('opacity', 0); });
-  return { redraw: () => compareChart(host, series, spec, height) };
-}
-
 // --- sparkline (stat tiles) -------------------------------------------------
 
 export function sparkline(host, values, color) {
@@ -724,9 +625,18 @@ export function sparkline(host, values, color) {
   const svg = el('svg', { width: '100%', height: h, viewBox: `0 0 ${w} ${h}`, preserveAspectRatio: 'none' });
   const xOf = (i) => (i / (values.length - 1)) * w;
   const yOf = (v) => h - 2 - ((v - min) / (max - min || 1)) * (h - 4);
-  const d = values.map((v, i) => (v === null ? '' : `${i === 0 ? 'M' : 'L'}${xOf(i)},${yOf(v)}`)).join('');
+  // Pen state, not array index: a series whose FIRST value is null must still open
+  // with M (a path starting with L is a parse error and draws nothing), and a
+  // mid-series null breaks the line instead of silently bridging the gap.
+  let pen = 'M';
+  const parts = [];
+  values.forEach((v, i) => {
+    if (v === null || v === undefined) { pen = 'M'; return; }
+    parts.push(`${pen}${xOf(i)},${yOf(v)}`);
+    pen = 'L';
+  });
   svg.appendChild(el('path', {
-    d, fill: 'none', stroke: color, 'stroke-width': 1.5,
+    d: parts.join(''), fill: 'none', stroke: color, 'stroke-width': 1.5,
     'stroke-linejoin': 'round', 'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke',
   }));
   host.appendChild(svg);
@@ -736,13 +646,17 @@ export function sparkline(host, values, color) {
 
 export function tableView(host, spec) {
   host.replaceChildren();
+  const wrap = document.createElement('div');
+  wrap.className = 'table-wrap';
   const table = document.createElement('table');
   table.className = 'data-table';
   const thead = document.createElement('thead');
   const hr = document.createElement('tr');
-  const cols = spec.keys
-    ? ['Time', ...spec.keys.map((k) => spec.labels[k] || k), 'Total']
-    : ['Time', `Value (${spec.unit})`];
+  const cols = spec.series
+    ? ['Time', ...spec.series.map((s) => s.label)]
+    : spec.keys
+      ? ['Time', ...spec.keys.map((k) => spec.labels[k] || k), 'Total']
+      : ['Time', `Value (${spec.unit})`];
   for (const c of cols) {
     const th = document.createElement('th');
     th.textContent = c;
@@ -752,33 +666,62 @@ export function tableView(host, spec) {
   table.appendChild(thead);
 
   const tbody = document.createElement('tbody');
-  const rows = spec.points.slice().reverse();
-  for (const p of rows) {
-    const tr = document.createElement('tr');
-    const td0 = document.createElement('td');
-    td0.textContent = fmtTimeFull(p.t, spec.bucketMs);
-    tr.appendChild(td0);
-    if (spec.keys) {
-      let total = 0;
-      for (const k of spec.keys) {
+  const fmt = (v) => (v === null || v === undefined || !Number.isFinite(v)
+    ? '—' : fmtNumber(v, spec.precision));
+
+  if (spec.series) {
+    // Several named columns merged on their shared timestamps (fitness/fatigue,
+    // corridor edges) — the accessible twin of a multi-line chart.
+    const byT = new Map();
+    for (const [si, s] of spec.series.entries()) {
+      for (const p of s.points) {
+        if (!byT.has(p.t)) byT.set(p.t, []);
+        byT.get(p.t)[si] = p.v;
+      }
+    }
+    for (const t of [...byT.keys()].sort((a, b) => b - a)) {
+      const tr = document.createElement('tr');
+      const td0 = document.createElement('td');
+      td0.textContent = fmtTimeFull(t, spec.bucketMs);
+      tr.appendChild(td0);
+      const vals = byT.get(t);
+      spec.series.forEach((_, si) => {
         const td = document.createElement('td');
-        const v = p.parts[k] || 0;
-        total += v;
-        td.textContent = v ? fmtNumber(v, spec.precision) : '—';
+        td.textContent = fmt(vals[si]);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    }
+  } else {
+    const rows = spec.points.slice().reverse();
+    for (const p of rows) {
+      const tr = document.createElement('tr');
+      const td0 = document.createElement('td');
+      td0.textContent = fmtTimeFull(p.t, spec.bucketMs);
+      tr.appendChild(td0);
+      if (spec.keys) {
+        let total = 0;
+        for (const k of spec.keys) {
+          const td = document.createElement('td');
+          const v = p.parts[k] || 0;
+          total += v;
+          td.textContent = v ? fmtNumber(v, spec.precision) : '—';
+          tr.appendChild(td);
+        }
+        const tt = document.createElement('td');
+        tt.textContent = fmtNumber(total, spec.precision);
+        tr.appendChild(tt);
+      } else {
+        const td = document.createElement('td');
+        td.textContent = p.v === null || p.v === undefined ? '—' : fmtNumber(p.v, spec.precision);
         tr.appendChild(td);
       }
-      const tt = document.createElement('td');
-      tt.textContent = fmtNumber(total, spec.precision);
-      tr.appendChild(tt);
-    } else {
-      const td = document.createElement('td');
-      td.textContent = p.v === null ? '—' : fmtNumber(p.v, spec.precision);
-      tr.appendChild(td);
+      tbody.appendChild(tr);
     }
-    tbody.appendChild(tr);
   }
   table.appendChild(tbody);
-  host.appendChild(table);
+  wrap.appendChild(table);
+  host.appendChild(wrap);
 }
 
 function empty(host, height) {
@@ -845,6 +788,9 @@ export function zoneBars(host, zoneTable, minutesByZone) {
 
     row.append(name, track, val);
     row.title = `${z.label} (${z.range}) — ${z.note}`;
+    // The title's content, reachable without a hover.
+    row.setAttribute('role', 'img');
+    row.setAttribute('aria-label', `${row.title}: ${val.textContent}`);
     host.appendChild(row);
   });
 }
@@ -852,7 +798,9 @@ export function zoneBars(host, zoneTable, minutesByZone) {
 // --- hypnogram --------------------------------------------------------------
 
 const STAGE_ORDER = ['AWAKE', 'REM', 'LIGHT', 'DEEP'];
-const STAGE_SLOT = { AWAKE: 0, REM: 3, LIGHT: 2, DEEP: 5 };
+// Same ramp steps as the seven-nights stacked chart (--ord-1/2/4/6) — the same
+// stage must not wear two shades on one screen.
+const STAGE_SLOT = { AWAKE: 0, REM: 3, LIGHT: 1, DEEP: 5 };
 
 /**
  * A night, stage by stage. Totals say "seven hours"; this says whether that was
@@ -898,6 +846,8 @@ export function hypnogram(host, timeline, opts = {}) {
       el2.style.background = t.ordinal[STAGE_SLOT[stage] ?? 2];
       const mins = Math.round((seg.to - seg.from) / 60000);
       el2.title = `${stage.toLowerCase()} · ${fmtTimeFull(seg.from, 0)} · ${mins} min`;
+      el2.setAttribute('role', 'img');
+      el2.setAttribute('aria-label', el2.title);
       track.appendChild(el2);
     }
 
@@ -1097,75 +1047,136 @@ export function corridorChart(host, spec, height = 200) {
 // --- day overlay (compare: two days of the SAME metric on one axis) ----------
 
 /**
- * `a`/`b`: {label, points:[{t,v}]}; `band`: optional typical p25–p75 per point of
- * b. Same unit on both sides, so this is one real axis, not an indexed trick;
- * the ghost wears a dash because it is a reference, not a measurement of today.
+ * `a`/`b`: {label, points:[{t,v}], origin?, bucketMs?}; b's points may carry
+ * p25/p75 (the typical band). Same unit on both sides, so this is one real axis,
+ * not an indexed trick; the ghost wears a dash because it is a reference, not a
+ * measurement of today.
+ *
+ * Points are positioned by REAL TIME, never by array index: the two curves can be
+ * sparse and DIFFERENTLY bucketed (a 2-minute in-progress today against a 4-minute
+ * settled day), so index i on one side is a different clock time on the other.
+ * Each series is placed by (t − its own origin) / spanMs; for a day-vs-day compare
+ * the caller passes each day's local midnight as origin and spanMs = 24 h.
  */
 export function overlayChart(host, spec, height = 230) {
   const t = tokens();
   const aPts = spec.a.points;
   const bPts = spec.b ? spec.b.points : [];
-  const n = Math.max(aPts.length, bPts.length);
-  if (!n || !aPts.some((p) => p.v !== null)) return empty(host, height);
+  if (!aPts.length || !aPts.some((p) => p.v !== null)) return empty(host, height);
   const { svg, width, plotH } = frame(host, height);
   const tip = makeTooltip(host);
 
+  const aOrigin = spec.a.origin ?? Math.min(...aPts.map((p) => p.t));
+  const bOrigin = spec.b && bPts.length ? (spec.b.origin ?? Math.min(...bPts.map((p) => p.t))) : 0;
+  const span = spec.spanMs ?? Math.max(1,
+    ...aPts.map((p) => p.t - aOrigin), ...bPts.map((p) => p.t - bOrigin));
+
   const all = [...aPts, ...bPts].flatMap((p) => [p.v, p.p25, p.p75])
     .filter((v) => v !== null && v !== undefined && Number.isFinite(v));
-  const { ticks, lo, hi } = yTicks(Math.min(...all), Math.max(...all), 4, spec.nonNegative !== false);
-  const xOf = (i) => PAD.left + (n === 1 ? spec0(width) : (i / (n - 1)) * (width - PAD.left - PAD.right));
+  // Zero-basing is OPT-IN: it suits accumulating metrics (steps, load) and
+  // flattens level ones — a 50–160 bpm day drawn from zero wastes a third of the
+  // plot saying "heart rates are above zero".
+  const { ticks, lo, hi } = yTicks(Math.min(...all), Math.max(...all), 4, spec.nonNegative === true);
+  const plotW = width - PAD.left - PAD.right;
+  const xAt = (frac) => PAD.left + Math.max(0, Math.min(1, frac)) * plotW;
+  const xA = (i) => xAt((aPts[i].t - aOrigin) / span);
+  const xB = (i) => xAt((bPts[i].t - bOrigin) / span);
   const yOf = (v) => PAD.top + plotH - ((v - lo) / (hi - lo || 1)) * plotH;
   drawGrid(svg, t, ticks, yOf, width, spec.precision || 0);
+
+  // Break a line where consecutive samples are further apart than ~2.5 buckets:
+  // an off-wrist gap must stay a gap, not be quietly bridged.
+  const gapSegs = (pts, bucketMs) => {
+    const maxGap = (bucketMs || spec.bucketMs || 3600000) * 2.5;
+    const runs = [];
+    let cur = [];
+    pts.forEach((p, i) => {
+      if (p.v === null || p.v === undefined || !Number.isFinite(p.v)) {
+        if (cur.length) { runs.push(cur); cur = []; }
+        return;
+      }
+      if (cur.length && p.t - pts[cur[cur.length - 1]].t > maxGap) { runs.push(cur); cur = []; }
+      cur.push(i);
+    });
+    if (cur.length) runs.push(cur);
+    return runs;
+  };
 
   const ghost = t.secondary;
   if (bPts.some((p) => p.p25 !== null && p.p25 !== undefined)) {
     const idx = bPts.map((p, i) => (p.p25 !== null && p.p25 !== undefined && p.p75 !== null ? i : null)).filter((i) => i !== null);
     if (idx.length > 1) {
-      const up = idx.map((i, k) => `${k ? 'L' : 'M'}${xOf(i)},${yOf(bPts[i].p75)}`).join('');
-      const down = idx.slice().reverse().map((i) => `L${xOf(i)},${yOf(bPts[i].p25)}`).join('');
+      const up = idx.map((i, k) => `${k ? 'L' : 'M'}${xB(i)},${yOf(bPts[i].p75)}`).join('');
+      const down = idx.slice().reverse().map((i) => `L${xB(i)},${yOf(bPts[i].p25)}`).join('');
       svg.appendChild(el('path', { d: `${up}${down}Z`, fill: ghost, 'fill-opacity': 0.1, stroke: 'none' }));
     }
   }
-  for (const seg of segments(bPts, (p) => p.v)) {
+  for (const seg of gapSegs(bPts, spec.b && spec.b.bucketMs)) {
     if (seg.length < 2) continue;
     svg.appendChild(el('path', {
-      d: seg.map((i, k) => `${k ? 'L' : 'M'}${xOf(i)},${yOf(bPts[i].v)}`).join(''),
+      d: seg.map((i, k) => `${k ? 'L' : 'M'}${xB(i)},${yOf(bPts[i].v)}`).join(''),
       fill: 'none', stroke: ghost, 'stroke-width': 1.5, 'stroke-dasharray': '4 4', 'stroke-opacity': 0.85,
     }));
   }
   const aColor = spec.color || t.series[0];
-  for (const seg of segments(aPts, (p) => p.v)) {
+  for (const seg of gapSegs(aPts, spec.a.bucketMs)) {
     if (seg.length < 2) {
       if (seg.length === 1) {
         svg.appendChild(el('circle', {
-          cx: xOf(seg[0]), cy: yOf(aPts[seg[0]].v), r: 3, fill: aColor, stroke: t.surface, 'stroke-width': 2,
+          cx: xA(seg[0]), cy: yOf(aPts[seg[0]].v), r: 3, fill: aColor, stroke: t.surface, 'stroke-width': 2,
         }));
       }
       continue;
     }
     svg.appendChild(el('path', {
-      d: seg.map((i, k) => `${k ? 'L' : 'M'}${xOf(i)},${yOf(aPts[i].v)}`).join(''),
+      d: seg.map((i, k) => `${k ? 'L' : 'M'}${xA(i)},${yOf(aPts[i].v)}`).join(''),
       fill: 'none', stroke: aColor, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
     }));
   }
-  drawXAxis(svg, t, (aPts.length >= bPts.length ? aPts : bPts), xOf, spec.bucketMs, plotH);
+  // Axis labels from whichever side has more points, each at its OWN position —
+  // clock times match across the two days by construction.
+  if (aPts.length >= bPts.length) drawXAxis(svg, t, aPts, xA, spec.bucketMs, plotH);
+  else drawXAxis(svg, t, bPts, xB, spec.bucketMs, plotH);
 
   const overlay = el('rect', {
-    x: PAD.left, y: PAD.top, width: Math.max(1, width - PAD.left - PAD.right), height: plotH,
+    x: PAD.left, y: PAD.top, width: Math.max(1, plotW), height: plotH,
     fill: 'transparent', style: 'cursor:crosshair',
   });
   svg.appendChild(overlay);
+  // Each side resolves the pointer to ITS nearest measured point — pairing by a
+  // shared index would show one day's 14:00 beside the other day's 09:20.
+  const nearest = (pts, origin, frac) => {
+    let best = null;
+    pts.forEach((p, i) => {
+      if (p.v === null || p.v === undefined || !Number.isFinite(p.v)) return;
+      const d2 = Math.abs((p.t - origin) / span - frac);
+      if (best === null || d2 < best.d) best = { i, d: d2 };
+    });
+    return best;
+  };
   overlay.addEventListener('pointermove', (e) => {
     const rect = svg.getBoundingClientRect();
     const rel = ((e.clientX - rect.left) / rect.width) * width;
-    const i = Math.max(0, Math.min(n - 1, Math.round(((rel - PAD.left) / Math.max(1, width - PAD.left - PAD.right)) * (n - 1))));
+    const frac = (rel - PAD.left) / Math.max(1, plotW);
+    const na = nearest(aPts, aOrigin, frac);
+    const nb = spec.b ? nearest(bPts, bOrigin, frac) : null;
     const rows = [];
-    const av = aPts[i] ? aPts[i].v : null;
-    const bv = bPts[i] ? bPts[i].v : null;
-    rows.push({ color: aColor, value: av === null ? '—' : `${fmtNumber(av, spec.precision || 0)} ${spec.unit}`, label: spec.a.label });
-    if (spec.b) rows.push({ color: ghost, value: bv === null || bv === undefined ? '—' : `${fmtNumber(bv, spec.precision || 0)} ${spec.unit}`, label: spec.b.label });
-    const at = (aPts[i] || bPts[i] || {}).t;
-    tip.show((xOf(i) / width) * rect.width, PAD.top + 10, rows, at ? fmtTimeFull(at, spec.bucketMs) : '');
+    rows.push({
+      color: aColor,
+      value: na === null ? '—' : `${fmtNumber(aPts[na.i].v, spec.precision || 0)} ${spec.unit}`,
+      label: spec.a.label,
+    });
+    if (spec.b) {
+      rows.push({
+        color: ghost,
+        value: nb === null ? '—' : `${fmtNumber(bPts[nb.i].v, spec.precision || 0)} ${spec.unit}`,
+        label: spec.b.label,
+      });
+    }
+    const atMs = na !== null ? aPts[na.i].t : nb !== null ? bPts[nb.i].t : null;
+    const x = na !== null ? xA(na.i) : nb !== null ? xB(nb.i) : xAt(frac);
+    tip.show((x / width) * rect.width, PAD.top + 10, rows,
+      atMs === null ? '' : fmtTimeFull(atMs, spec.bucketMs));
   });
   overlay.addEventListener('pointerleave', () => tip.hide());
   return { redraw: () => overlayChart(host, spec, height) };

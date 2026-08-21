@@ -1,0 +1,9 @@
+# The Dockerfile COPYs explicit paths, so this mostly trims the build context —
+# but it is also the guard that keeps .env (real secrets) and the old local
+# state/ database out of the image if a broad COPY ever lands.
+node_modules
+state
+.env
+.git
+.claude
+*.md

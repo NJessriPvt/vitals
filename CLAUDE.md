@@ -11,10 +11,10 @@ self-describing (dates, units, `method`, freshness) and never UI-shaped.
 
 `npm start` · `npm test` · `npm run check:paths`
 
-**Local dev needs a tunnel to the fleet DB** — MySQL's published port is filtered
-from outside njvhost:
+**Local dev needs a tunnel to the DB host** — MySQL's published port is filtered
+from outside the database's own host:
 
-    ssh -f -N -L 3307:192.168.50.244:3306 njvhost
+    ssh -f -N -L 3307:<db-host>:3306 <db-server>
 
 A locally-run server competes for the sync lease with production (same database), so
 stop it when you are done or it will occasionally sync from your laptop.
@@ -101,7 +101,9 @@ Int64 values arrive as JSON **strings** (`"count": "15"`).
   **wake** time (`bucketBy: 'end'`) — bucketing a night by bedtime puts a 23:40 and a
   00:20 start on different days and produces 15-hour double-nights.
 - **Google is reached from exactly two modules**: `lib/oauth.js` (tokens) and
-  `lib/health.js` (data). The dashboard reads only the database and never waits on upstream.
+  `lib/health.js` (data). The dashboard reads only the database and never waits on
+  upstream — including for age, which sync writes into settings so `metrics.getProfile()`
+  stays a pure database read.
 - **The webhook checks auth BEFORE answering the handshake.** Registration probes the
   endpoint *without* credentials and requires a 401/403; an endpoint that 200s
   everything fails with `FAILED_PRECONDITION`. This inverts the usual "handle health
@@ -120,17 +122,19 @@ Hand-rolled SVG against the house data-viz method. The palette in `style.css` is
 - Ordered scales (sleep stages, HR zones) use the **single-hue ordinal ramp**, never
   categorical hues. Sleep sets `rampReverse` because it stacks DEEP at the bottom
   while deep sleep is the *most* end of the scale and must be the darkest step.
-- **Never a second y-axis.** The compare chart indexes each metric to its own mean
-  over the range (100 = typical) and puts them on one axis.
+- **Never a second y-axis.** If metrics with different units ever share a chart,
+  index each to its own mean over the range (100 = typical) on one axis — never
+  align two scales.
 - **A missing bucket is `null`, never `0`** — "not measured" and "measured zero" are
   different claims. `query.denseBuckets` emits every bucket so charts position by
   real time; lines break at gaps. `connectGaps` (weight, body fat, height) joins the
   runs *while keeping real indices*, because a standing value doesn't stop existing
   between measurements.
 - Marks: bars ≤24px with a 4px rounded data-end, 2px lines, 2px surface gaps between
-  fills, hairline solid gridlines, labels only on the last point. Every chart has a
-  table view — that is also what satisfies the relief rule for the three light-mode
-  palette slots under 3:1 contrast.
+  fills, hairline solid gridlines, labels only on the last point. Every time-series
+  chart card carries a table toggle (`withTable` in app.js → `tableView`) — that is
+  also what satisfies the relief rule for the three light-mode palette slots under
+  3:1 contrast.
 - Axis ticks take **one unit and one decimal rule for the whole axis**, derived from
   the largest tick and the step. Per-tick formatting prints `5,000` under `10.0K`,
   and integer rounding prints a 2.5 step as `0, 3, 5, 8, 10`.
@@ -140,9 +144,13 @@ Hand-rolled SVG against the house data-viz method. The palette in `style.css` is
   `corridorChart` is band + dotted line; `heatCalendar` is single-hue sequential
   with untracked days as empty dashed cells (not zero-coloured), and every cell is
   a button that jumps to its day; `lineChart` gained `refBand` — the personal
-  p10–p90 painted behind any series. The stress `stateStrip` marks off-wrist hours
-  as unknown, never calm. The Aurora glass treatment changes surfaces only — the
-  validated palette values are untouched.
+  p10–p90 painted behind any series. The stress `stateStrip` (on Today) marks
+  off-wrist hours as unknown, never calm. `overlayChart` positions every point by
+  REAL TIME against each series' own origin — its two curves can be sparse and
+  differently bucketed, so index alignment would pair different clock times; its
+  zero-basing is opt-in (`nonNegative: true` for accumulating metrics only). The
+  Aurora glass treatment changes surfaces only — the validated palette values are
+  untouched.
 
 ## Derived insights (`lib/insights.js` + `lib/scores.js`/`night.js`/`training.js`/`trends.js`/`goals.js`)
 
@@ -156,6 +164,15 @@ substitute zero.
   rate”; it must not guess an activity type without movement/GPS evidence.
 - The Zone 3 entry threshold is 60% of the profile's max HR. Max HR uses `220 - age`
   unless the user explicitly sets an override in Profile.
+- **Age is READ FROM THE GOOGLE ACCOUNT, never typed in.** `GET /users/me/profile`
+  returns it as whole years under the already-granted `googlehealth.profile.readonly`
+  scope (`/users/me` and `/users/me/userProfile` are both 404 — only that exact path
+  works). Sync stores it; `POST /api/settings` rejects `age` outright. A hand-entered
+  age would silently outlive every sync and shift every zone boundary with it. Max HR
+  stays overridable — a measured max beats any estimate. The pre-sync fallback still
+  answers 30, but reports `ageSource: 'default'` so nothing presents the assumption
+  as a measurement; a failed profile read keeps the last known age and must never
+  fail the sweep.
 - Ten elevated minutes qualify; five minutes below threshold or without samples ends
   the session. Do not bridge an off-wrist gap and call it exercise.
 - Activity calories prefer granular active-energy intervals. A day-scale record is a

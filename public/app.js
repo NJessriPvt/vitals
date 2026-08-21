@@ -15,7 +15,7 @@
 import {
   lineChart, barChart, stackedChart, zoneBars, hypnogram, sparkline,
   ringGauge, arcGauge, ringTrio, corridorChart, overlayChart, heatCalendar,
-  fmtNumber,
+  stateStrip, tableView, fmtNumber,
 } from './charts.js';
 
 const $ = (id) => document.getElementById(id);
@@ -136,6 +136,43 @@ function methodNote(c, obj) {
   if (obj && obj.limitation) c.appendChild(el('p', obj.limitation, 'method-note'));
 }
 
+/** Civil date string for an epoch ms, in the viewer's zone — one implementation,
+ * because ad-hoc copies of this idiom are how a weekday label ends up in UTC. */
+const dateStrOf = (ms) => new Date(ms + tzMs()).toISOString().slice(0, 10);
+const prettyMs = (ms) => prettyDate(dateStrOf(ms));
+
+/** Label/value rows in the shared report style. */
+function reportRows(pairs) {
+  const rows = el('div', null, 'report-rows');
+  for (const [label, v] of pairs) {
+    const row = el('div', null, 'report-row');
+    row.append(el('span', label, 'label'), el('b', v));
+    rows.appendChild(row);
+  }
+  return rows;
+}
+
+/**
+ * Every chart carries a table twin — the WCAG-clean view that also satisfies the
+ * relief rule for the low-contrast palette slots. The toggle lives in the card
+ * head; `draw` re-renders the chart, `tableSpec` feeds charts.tableView.
+ */
+function withTable(cardEl, host, draw, tableSpec) {
+  let mode = 'chart';
+  const btn = el('button', 'table', 'table-toggle');
+  btn.type = 'button';
+  btn.setAttribute('aria-pressed', 'false');
+  btn.addEventListener('click', () => {
+    mode = mode === 'chart' ? 'table' : 'chart';
+    btn.textContent = mode === 'table' ? 'chart' : 'table';
+    btn.setAttribute('aria-pressed', String(mode === 'table'));
+    if (mode === 'table') tableView(host, tableSpec);
+    else draw();
+  });
+  (cardEl.head || cardEl).appendChild(btn);
+  draw();
+}
+
 /** Jump to a specific day in a day-scoped room — every heat cell uses this. */
 function jumpToDay(dateStr, view = 'today') {
   state.date = dateStr > todayStr() ? todayStr() : dateStr;
@@ -183,6 +220,9 @@ function renderToday(d) {
     const chip = el('span', null, `contrib ${c.status}`);
     chip.append(document.createTextNode(`${c.label} `), el('b', c.current === null ? '—' : String(c.current)));
     chip.title = c.detail || '';
+    // The detail must be reachable without a mouse hover — title alone is
+    // invisible to keyboard and touch users.
+    if (c.detail) { chip.setAttribute('aria-label', `${c.label}: ${c.detail}`); chip.tabIndex = 0; }
     chips.appendChild(chip);
   }
   hero.appendChild(chips);
@@ -204,7 +244,9 @@ function renderToday(d) {
   const trioHost = el('div');
   wrap.appendChild(trioHost);
   const legend = el('div', null, 'rings-legend');
-  const ringColors = { move: seriesOf('steps'), train: seriesOf('cardioLoad'), recover: seriesOf('sleep') };
+  // Colour follows the ENTITY: Move is active calories, so it wears the calories
+  // slot — the same number as the "Active kcal" tile below must not change colour.
+  const ringColors = { move: seriesOf('calories'), train: seriesOf('cardioLoad'), recover: seriesOf('sleep') };
   for (const r of d.rings) {
     const line = el('div', null, 'ring-line');
     const sw = el('span', null, 'swatch');
@@ -221,9 +263,18 @@ function renderToday(d) {
   legend.appendChild(pai);
   wrap.appendChild(legend);
   ringsCard.appendChild(wrap);
-  const adaptedReason = d.goals.steps.reason || d.goals.move.reason;
-  if (adaptedReason) ringsCard.appendChild(el('p', `Goals ${adaptedReason}`, 'goal-reason'));
+  if (d.goals.steps.reason) ringsCard.appendChild(el('p', `Goals ${d.goals.steps.reason}`, 'goal-reason'));
   main.appendChild(ringsCard);
+
+  // --- stress timeline --------------------------------------------------------
+  const pct = (v) => (v === null || v === undefined ? '—' : `${Math.round(v * 100)}%`);
+  const stressCard = card('Stress', d.stress.trackedHours
+    ? `calm ${pct(d.stress.shares.calm)} · elevated ${pct(d.stress.shares.elevated)} · high ${pct(d.stress.shares.high)} · ${d.stress.trackedHours}h tracked`
+    : 'No tracked hours yet today');
+  const stressHost = el('div');
+  stressCard.appendChild(stressHost);
+  methodNote(stressCard, d.stress);
+  main.appendChild(stressCard);
 
   // --- symptom radar (only when it has something to say) --------------------
   if (d.radar.level === 'minor' || d.radar.level === 'major') {
@@ -257,10 +308,14 @@ function renderToday(d) {
   // --- last night strip -----------------------------------------------------
   const sleep = card('Last night', 'The full night lives in Sleep');
   const strip = el('div', null, 'debt-hero');
-  strip.append(el('b', d.sleepStrip.mainHours === null ? '—' : hhmm(d.sleepStrip.mainHours)));
+  // The headline is time ASLEEP — that is what need/debt compare against. The
+  // in-bed span sits in the subline so the two never read as the same number.
+  const asleepH = d.sleepStrip.asleepHours ?? d.sleepStrip.mainHours;
+  strip.append(el('b', asleepH === null ? '—' : hhmm(asleepH)));
   const sub = el('div', null, 'sub');
   sub.append(document.createTextNode(
     `need ${d.sleepStrip.needHours ? hhmm(d.sleepStrip.needHours) : '—'} · debt ${d.sleepStrip.debtHours === null ? '—' : `${d.sleepStrip.debtHours}h`}`
+    + (d.sleepStrip.mainHours !== null && d.sleepStrip.mainHours !== asleepH ? ` · in bed ${hhmm(d.sleepStrip.mainHours)}` : '')
     + (d.sleepStrip.efficiencyPercent ? ` · ${d.sleepStrip.efficiencyPercent}% efficient` : ''),
   ));
   strip.appendChild(sub);
@@ -315,16 +370,21 @@ function renderToday(d) {
     });
     arcGauge(battHost, {
       value: d.battery.current, max: 100, label: 'battery',
-      color: seriesOf('calories'), format: (v) => `${v}%`,
+      // Neutral ink, not the calories slot: the battery is a derived level, not
+      // the calories entity, and a metric colour here would claim it is.
+      color: css('--text-2'), format: (v) => `${v}%`,
     });
     if (d.forecast.available) {
-      lineChart(fcHost, {
+      const fcSpec = {
         points: d.forecast.points, unit: '', precision: 0, bucketMs: 1800000,
         label: 'Predicted energy', area: true, color: seriesOf('sleep'),
-      }, window.innerWidth < 560 ? 150 : 180);
+      };
+      withTable(fc, fcHost,
+        () => lineChart(fcHost, fcSpec, window.innerWidth < 560 ? 150 : 180), fcSpec);
     } else {
       fcHost.replaceChildren(el('div', 'No wake time measured this morning', 'chart-empty'));
     }
+    stateStrip(stressHost, d.stress.points);
     ringTrio(trioHost, d.rings.map((r) => ({ fraction: r.fraction, color: ringColors[r.id] })));
   });
 }
@@ -366,18 +426,12 @@ function renderSleepScreen(d) {
   main.appendChild(nightCard);
 
   const needCard = card('Need & debt', 'Rise-style: a balance in hours, not a nightly grade');
-  const needRows = el('div', null, 'report-rows');
-  for (const [label, v] of [
+  needCard.appendChild(reportRows([
     ['Your learned need', d.need.baseNeedHours ? hhmm(d.need.baseNeedHours) : '—'],
     ['Tonight’s need', d.need.tonightNeedHours ? hhmm(d.need.tonightNeedHours) : '—'],
     ['Debt to repay', d.need.debtHours === null ? '—' : `${d.need.debtHours} h`],
     ['Nights it learned from', String(d.need.nightsUsed)],
-  ]) {
-    const row = el('div', null, 'report-row');
-    row.append(el('span', label, 'label'), el('b', v));
-    needRows.appendChild(row);
-  }
-  needCard.appendChild(needRows);
+  ]));
   methodNote(needCard, d.need);
   main.appendChild(needCard);
 
@@ -409,7 +463,7 @@ function renderSleepScreen(d) {
     for (const nap of d.napsWeek) {
       const row = el('div', null, 'nap-row');
       row.append(el('b', hhmm(nap.hours)),
-        el('span', `${prettyDate(new Date(nap.day + tzMs()).toISOString().slice(0, 10))} at ${timeOf(nap.start)} · repaid ${nap.debtCreditHours}h`));
+        el('span', `${prettyMs(nap.day)} at ${timeOf(nap.start)} · repaid ${nap.debtCreditHours}h`));
       napCard.appendChild(row);
     }
     main.appendChild(napCard);
@@ -439,14 +493,15 @@ function renderSleepScreen(d) {
     } else hypnogram(hypHost, []);
 
     const height = window.innerWidth < 560 ? 160 : 200;
-    lineChart(tempHost, {
+    const tempSpec = {
       points: d.temperature.points, unit: d.temperature.unit, precision: 2,
       bucketMs: DAY_MS, label: 'Deviation', diverging: true,
       color: seriesOf('heart'),
       refBand: d.temperature.band,
-    }, height);
+    };
+    withTable(tempCard, tempHost, () => lineChart(tempHost, tempSpec, height), tempSpec);
 
-    stackedChart(trendHost, {
+    const trendSpec = {
       points: d.trend.map((r) => ({
         t: r.t,
         parts: r.stageHours
@@ -457,7 +512,8 @@ function renderSleepScreen(d) {
       labels: { DEEP: 'Deep', REM: 'REM', LIGHT: 'Light', AWAKE: 'Awake' },
       colors: { DEEP: css('--ord-6'), REM: css('--ord-4'), LIGHT: css('--ord-2'), AWAKE: css('--ord-1') },
       unit: 'h', precision: 1, bucketMs: DAY_MS, goal: d.goalHours,
-    }, height);
+    };
+    withTable(trendCard, trendHost, () => stackedChart(trendHost, trendSpec, height), trendSpec);
   });
 }
 
@@ -465,16 +521,29 @@ function renderSleepScreen(d) {
 // TRAIN — session first
 // ---------------------------------------------------------------------------
 
+/** One list of session stat pairs, so the hero and the list cannot drift apart. */
+function sessionStatItems(s, extended) {
+  const cal = s.calories === null || s.calories === undefined ? '—' : `${fmtNumber(s.calories, 0)} kcal`;
+  return extended
+    ? [
+      ['Effort', s.load === null ? '—' : String(Math.round(s.load))],
+      ['Avg', s.averageHeartRate ? `${s.averageHeartRate} bpm` : '—'],
+      ['Max', s.maxHeartRate ? `${s.maxHeartRate} bpm` : '—'],
+      ['Burned', cal],
+      ['HRR', s.heartRateRecovery ? `−${s.heartRateRecovery.dropBpm}` : '—'],
+    ]
+    : [
+      ['Effort', s.load === null ? '—' : String(Math.round(s.load))],
+      ['Strain', s.strain === null ? '—' : s.strain.toFixed(1)],
+      ['Avg HR', s.averageHeartRate ? `${s.averageHeartRate}` : '—'],
+      ['Burned', cal],
+      ['HR recovery', s.heartRateRecovery ? `−${s.heartRateRecovery.dropBpm} bpm` : '—'],
+    ];
+}
+
 function sessionStats(s) {
   const stats = el('div', null, 'session-stats');
-  const items = [
-    ['Effort', s.load === null ? '—' : String(Math.round(s.load))],
-    ['Strain', s.strain === null ? '—' : s.strain.toFixed(1)],
-    ['Avg HR', s.averageHeartRate ? `${s.averageHeartRate}` : '—'],
-    ['Burned', s.calories === null || s.calories === undefined ? '—' : `${fmtNumber(s.calories, 0)} kcal`],
-    ['HR recovery', s.heartRateRecovery ? `−${s.heartRateRecovery.dropBpm} bpm` : '—'],
-  ];
-  for (const [label, value] of items) {
+  for (const [label, value] of sessionStatItems(s, false)) {
     const stat = el('div', null, 'stat');
     stat.append(el('b', value), el('small', label));
     stats.appendChild(stat);
@@ -498,7 +567,7 @@ function renderTrain(d) {
     const title = el('div', null, 'session-title');
     title.append(el('strong', s.label),
       el('span', null, `kind-chip ${s.kind}`),
-      el('span', `${prettyDate(new Date(s.start + tzMs()).toISOString().slice(0, 10))} ${timeOf(s.start)}–${timeOf(s.end)} · ${s.durationMinutes} min`, 'when'));
+      el('span', `${prettyMs(s.start)} ${timeOf(s.start)}–${timeOf(s.end)} · ${s.durationMinutes} min`, 'when'));
     title.querySelector('.kind-chip').textContent = s.kind === 'detected' ? 'detected' : 'recorded';
     wrap.appendChild(title);
     wrap.appendChild(sessionStats(s));
@@ -507,10 +576,17 @@ function renderTrain(d) {
     hero.appendChild(wrap);
     requestAnimationFrame(() => zoneBars(zonesHost, d.zoneTable, s.zoneMinutes || {}));
   }
+  // Three states, three messages — 'easy-ok' wears the green dot, so printing
+  // "Recovering" for it made the text and the colour disagree.
   const cd = el('span', null, `countdown-chip ${d.countdown.state}`);
-  cd.append(document.createTextNode(d.countdown.state === 'ready' ? 'Recovered — ' : 'Recovering — '),
-    el('b', d.countdown.state === 'ready' ? 'ready for a hard session' : `${d.countdown.hoursRemaining}h to full`));
+  const cdText = {
+    ready: ['Recovered — ', 'ready for a hard session'],
+    'easy-ok': ['Nearly there — ', `easy session is fine · ${d.countdown.hoursRemaining}h to full`],
+    recovering: ['Recovering — ', `${d.countdown.hoursRemaining}h to full`],
+  }[d.countdown.state] || ['Recovering — ', `${d.countdown.hoursRemaining}h to full`];
+  cd.append(document.createTextNode(cdText[0]), el('b', cdText[1]));
   cd.title = d.countdown.method || '';
+  if (d.countdown.method) { cd.setAttribute('aria-label', `${cdText[0]}${cdText[1]}. ${d.countdown.method}`); cd.tabIndex = 0; }
   hero.appendChild(cd);
   main.appendChild(hero);
 
@@ -556,16 +632,10 @@ function renderTrain(d) {
     strong.appendChild(el('span', s.kind === 'detected' ? 'detected' : 'recorded', `kind-chip ${s.kind}`));
     left.appendChild(strong);
     head.append(left,
-      el('span', `${prettyDate(new Date(s.start + tzMs()).toISOString().slice(0, 10))} · ${timeOf(s.start)} · ${s.durationMinutes} min`));
+      el('span', `${prettyMs(s.start)} · ${timeOf(s.start)} · ${s.durationMinutes} min`));
     row.appendChild(head);
     const stats = el('div', null, 'activity-stats');
-    for (const [label, value] of [
-      ['Effort', s.load === null ? '—' : String(Math.round(s.load))],
-      ['Avg', s.averageHeartRate ? `${s.averageHeartRate} bpm` : '—'],
-      ['Max', s.maxHeartRate ? `${s.maxHeartRate} bpm` : '—'],
-      ['Burned', s.calories === null || s.calories === undefined ? '—' : `${fmtNumber(s.calories, 0)} kcal`],
-      ['HRR', s.heartRateRecovery ? `−${s.heartRateRecovery.dropBpm}` : '—'],
-    ]) {
+    for (const [label, value] of sessionStatItems(s, true)) {
       const stat = el('span');
       stat.append(el('small', label), document.createTextNode(value));
       stats.appendChild(stat);
@@ -582,7 +652,7 @@ function renderTrain(d) {
   for (const r of d.records) {
     const row = el('div', null, 'record-row');
     row.append(el('span', r.label, 'label'), el('b', `${fmtNumber(r.value, 0)} ${r.unit}`),
-      el('span', r.atMs ? `${new Date(r.atMs + tzMs()).toISOString().slice(0, 10)} · ${r.window}` : r.window, 'window'));
+      el('span', r.atMs ? `${dateStrOf(r.atMs)} · ${r.window}` : r.window, 'window'));
     recList.appendChild(row);
   }
   rec.appendChild(recList);
@@ -600,13 +670,21 @@ function renderTrain(d) {
     for (const e2 of d.strength.entries.slice(0, 10)) {
       const row = el('div', null, 'nap-row');
       row.append(el('b', e2.exercise),
-        el('span', `${new Date(e2.ts_ms + tzMs()).toISOString().slice(0, 10)} · ${e2.sets}×${e2.reps} @ ${e2.weight_kg}kg · ${fmtNumber(e2.volume_kg, 0)}kg volume · index ${e2.muscularIndex}`));
+        el('span', `${dateStrOf(e2.ts_ms)} · ${e2.sets}×${e2.reps} @ ${e2.weight_kg}kg · ${fmtNumber(e2.volume_kg, 0)}kg volume · index ${e2.muscularIndex}`));
       const del = el('button', '×', 'dialog-close');
       del.type = 'button';
       del.setAttribute('aria-label', `Delete ${e2.exercise}`);
       del.addEventListener('click', async () => {
-        await sendJson(`${api('strength')}?id=${e2.id}`, undefined, 'DELETE');
-        load();
+        // Same discipline as every other mutation: a failed delete must say so,
+        // not reject unhandled while the row invites another tap.
+        del.disabled = true;
+        try {
+          await sendJson(`${api('strength')}?id=${e2.id}`, undefined, 'DELETE');
+          await load();
+        } catch (e) {
+          del.disabled = false;
+          row.appendChild(el('span', e.message, 'form-error'));
+        }
       });
       row.appendChild(del);
       st.appendChild(row);
@@ -617,23 +695,40 @@ function renderTrain(d) {
 
   requestAnimationFrame(() => {
     const height = window.innerWidth < 560 ? 170 : 210;
-    corridorChart(corrHost, { series: d.corridor.series.filter((x) => x.t >= Date.now() - 90 * DAY_MS), bucketMs: DAY_MS }, height);
+    const corrSeries = d.corridor.series.filter((x) => x.t >= Date.now() - 90 * DAY_MS);
+    withTable(corr, corrHost,
+      () => corridorChart(corrHost, { series: corrSeries, bucketMs: DAY_MS }, height),
+      {
+        bucketMs: DAY_MS,
+        precision: 0,
+        series: [
+          { label: '7-day load', points: corrSeries.map((x) => ({ t: x.t, v: x.fatigue })) },
+          { label: 'Corridor low', points: corrSeries.map((x) => ({ t: x.t, v: x.lo })) },
+          { label: 'Corridor high', points: corrSeries.map((x) => ({ t: x.t, v: x.hi })) },
+        ],
+      });
     // Fitness emphasized, fatigue thin — same load scale, one axis.
     const pts = d.loadModel.series;
-    overlayChart(lmHost, {
-      a: { label: 'Fitness (42d)', points: pts.map((x) => ({ t: x.t, v: x.fitness })) },
-      b: { label: 'Fatigue (7d)', points: pts.map((x) => ({ t: x.t, v: x.fatigue })) },
-      unit: 'TRIMP', precision: 0, bucketMs: DAY_MS, color: seriesOf('cardioLoad'),
-    }, height);
+    const lmA = { label: 'Fitness (42d)', points: pts.map((x) => ({ t: x.t, v: x.fitness })) };
+    const lmB = { label: 'Fatigue (7d)', points: pts.map((x) => ({ t: x.t, v: x.fatigue })) };
+    withTable(lm, lmHost,
+      () => overlayChart(lmHost, {
+        a: lmA, b: lmB,
+        unit: 'TRIMP', precision: 0, bucketMs: DAY_MS, nonNegative: true,
+        color: seriesOf('cardioLoad'),
+      }, height),
+      { bucketMs: DAY_MS, precision: 0, series: [lmA, lmB] });
     heatCalendar(seasonHost, {
       cells: d.season.cells.slice(-56), thresholds: d.season.thresholds,
       unit: 'TRIMP', precision: 0, offsetMs: tzMs(),
     }, (dateStr) => jumpToDay(dateStr));
-    barChart(weeksHost, {
+    const weeksSpec = {
       points: d.weeklyLoad.map((w) => ({ t: w.t, v: w.load })),
       unit: 'TRIMP', precision: 0, bucketMs: 7 * DAY_MS, label: 'Weekly load',
       color: seriesOf('cardioLoad'),
-    }, window.innerWidth < 560 ? 130 : 160);
+    };
+    withTable(season, weeksHost,
+      () => barChart(weeksHost, weeksSpec, window.innerWidth < 560 ? 130 : 160), weeksSpec);
   });
 }
 
@@ -653,6 +748,7 @@ function renderTrends(d) {
   const bench = el('div', null, 'bench');
   const dateA = document.createElement('input');
   dateA.type = 'date';
+  dateA.name = 'compare-a';
   dateA.value = d.compare.a.date;
   dateA.max = todayStr();
   dateA.className = 'bench-date';
@@ -664,8 +760,12 @@ function renderTrends(d) {
   bench.appendChild(el('span', 'vs', 'vs'));
 
   const bSel = document.createElement('select');
+  bSel.name = 'compare-b';
   bSel.setAttribute('aria-label', 'Day B');
-  const wd = new Date(dateA.value).toLocaleDateString([], { weekday: 'long' });
+  // timeZone UTC, because 'YYYY-MM-DD' parses as UTC midnight — formatted in a
+  // west-of-UTC locale it names the previous weekday, and the server picks the
+  // ghost's weekday from the date itself.
+  const wd = new Date(dateA.value).toLocaleDateString([], { weekday: 'long', timeZone: 'UTC' });
   for (const [v, label] of [
     ['typical', `Typical ${wd}`],
     [shiftDate(d.compare.a.date, -1), 'Day before'],
@@ -682,6 +782,7 @@ function renderTrends(d) {
       ? state.compare.b : 'pick';
   const dateB = document.createElement('input');
   dateB.type = 'date';
+  dateB.name = 'compare-b-date';
   dateB.max = todayStr();
   dateB.hidden = bSel.value !== 'pick';
   if (bSel.value === 'pick' && state.compare.b !== 'typical') dateB.value = state.compare.b;
@@ -794,25 +895,45 @@ function renderTrends(d) {
   requestAnimationFrame(() => {
     const height = window.innerWidth < 560 ? 190 : 240;
     const aColor = d.compare.metric === 'steps' ? seriesOf('steps') : seriesOf('heart');
+    // Each side is positioned by time-of-day against its OWN local midnight —
+    // the curves are sparse and differently bucketed, so index alignment would
+    // put one day's timestamps under the other day's points.
+    const originOf = (dateStr) => {
+      const [y, m2, dd] = dateStr.split('-').map(Number);
+      return Date.UTC(y, m2 - 1, dd) - tzMs();
+    };
+    const aOrigin = originOf(d.compare.a.date);
     let bSeries = null;
     if (d.compare.b) {
-      bSeries = { label: prettyDate(d.compare.b.date), points: d.compare.b.curve };
+      bSeries = {
+        label: prettyDate(d.compare.b.date),
+        points: d.compare.b.curve,
+        origin: originOf(d.compare.b.date),
+        bucketMs: d.compare.b.bucketMs,
+      };
     } else if (d.compare.typical) {
-      const [y, m2, dd] = d.compare.a.date.split('-').map(Number);
-      const base = Date.UTC(y, m2 - 1, dd) - tzMs();
       bSeries = {
         label: `typical ${wd}`,
         points: d.compare.typical.points.map((p) => ({
-          t: base + p.hour * 3600000, v: p.v, p25: p.p25, p75: p.p75,
+          t: aOrigin + p.hour * 3600000, v: p.v, p25: p.p25, p75: p.p75,
         })),
+        origin: aOrigin,
+        bucketMs: 3600000,
       };
     }
     overlayChart(cmpHost, {
-      a: { label: prettyDate(d.compare.a.date), points: d.compare.a.curve },
+      a: {
+        label: prettyDate(d.compare.a.date),
+        points: d.compare.a.curve,
+        origin: aOrigin,
+        bucketMs: d.compare.a.bucketMs,
+      },
       b: bSeries,
       unit: d.compare.metric === 'steps' ? 'steps' : 'bpm',
       precision: 0,
-      bucketMs: d.compare.b && d.compare.metric !== 'steps' ? 120000 : 3600000,
+      bucketMs: d.compare.a.bucketMs || 3600000,
+      spanMs: DAY_MS,
+      nonNegative: d.compare.metric === 'steps',
       color: aColor,
     }, height);
     heatCalendar(heatHost, { ...d.heat, offsetMs: tzMs() }, (dateStr) => jumpToDay(dateStr));
@@ -878,7 +999,9 @@ function renderYou(d) {
   const strip = el('div', null, 'radar-strip');
   for (const day of d.radar.history.slice(-14)) {
     const cell = el('span', null, `radar-day ${day.level === 'unavailable' ? 'none' : day.level}`);
-    cell.title = `${new Date(day.t + tzMs()).toISOString().slice(0, 10)} — ${day.level === 'unavailable' ? 'not measured' : day.level === 'none' ? 'no signs' : `${day.level} signs (${day.flagged} signals)`}`;
+    cell.title = `${dateStrOf(day.t)} — ${day.level === 'unavailable' ? 'not measured' : day.level === 'none' ? 'no signs' : `${day.level} signs (${day.flagged} signals)`}`;
+    cell.setAttribute('role', 'img');
+    cell.setAttribute('aria-label', cell.title);
     strip.appendChild(cell);
   }
   radar.appendChild(strip);
@@ -912,7 +1035,7 @@ function renderYou(d) {
         const entry = el('span', null, 'podium-entry');
         entry.append(el('i', String(i + 1)),
           el('b', `${fmtNumber(e2.value, r.precision)}${r.unit ? ` ${r.unit}` : ''}`),
-          el('span', new Date(e2.atMs + tzMs()).toISOString().slice(0, 10), 'window'));
+          el('span', dateStrOf(e2.atMs), 'window'));
         podium.appendChild(entry);
       });
       row.appendChild(podium);
@@ -977,7 +1100,7 @@ async function renderCalendar() {
   try {
     days = (await getJson(`${api('screen/calendar')}?month=${state.calMonth}&tz=${tzMs()}`)).days;
   } catch { /* the grid still renders; dots are decoration */ }
-  const richness = new Map(days.map((x) => [new Date(x.t + tzMs()).toISOString().slice(0, 10), x]));
+  const richness = new Map(days.map((x) => [dateStrOf(x.t), x]));
 
   const first = new Date(Date.UTC(y, m - 1, 1));
   const pad = (first.getUTCDay() + 6) % 7;
@@ -1073,6 +1196,7 @@ async function load() {
     render();
   } catch (err) {
     if (mine !== token) return;
+    state.data = null;
     main.replaceChildren();
     main.className = '';
     const c = card('Could not load');
@@ -1086,6 +1210,8 @@ async function load() {
 function render() {
   const d = state.data;
   if (!d) return;
+  // Belt and braces: never push a payload through another screen's renderer.
+  if (d.view && d.view !== state.view) return;
   if (state.view === 'today') renderToday(d);
   else if (state.view === 'sleep') renderSleepScreen(d);
   else if (state.view === 'train') renderTrain(d);
@@ -1096,7 +1222,9 @@ function render() {
 function setView(view) {
   state.view = view;
   for (const tab of document.querySelectorAll('.tab')) {
-    tab.setAttribute('aria-selected', String(tab.dataset.view === view));
+    const selected = tab.dataset.view === view;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
   }
   renderDayBar();
   load();
@@ -1110,9 +1238,24 @@ async function refreshStatus() {
 }
 
 function initEvents() {
-  for (const tab of document.querySelectorAll('.tab')) {
+  const tabs = [...document.querySelectorAll('.tab')];
+  for (const tab of tabs) {
     tab.addEventListener('click', () => setView(tab.dataset.view));
   }
+  // The declared tablist pattern owes its keyboard model: one tab stop, arrows
+  // move between tabs, Home/End jump.
+  document.querySelector('.tabs').addEventListener('keydown', (e) => {
+    const i = tabs.findIndex((tab) => tab.dataset.view === state.view);
+    let next = null;
+    if (e.key === 'ArrowRight') next = (i + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft') next = (i - 1 + tabs.length) % tabs.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = tabs.length - 1;
+    if (next === null) return;
+    e.preventDefault();
+    setView(tabs[next].dataset.view);
+    tabs[next].focus();
+  });
   $('day-prev').addEventListener('click', () => {
     state.date = shiftDate(state.date, -1);
     renderDayBar();
@@ -1134,7 +1277,6 @@ function initEvents() {
   $('btn-profile').addEventListener('click', openProfile);
   $('profile-close').addEventListener('click', () => $('profile-dialog').close());
   $('profile-cancel').addEventListener('click', () => $('profile-dialog').close());
-  $('profile-age').addEventListener('input', renderProfileEstimate);
   $('profile-max-hr').addEventListener('input', renderProfileEstimate);
   $('profile-form').addEventListener('submit', saveProfile);
 
@@ -1167,11 +1309,17 @@ function initEvents() {
 
   const es = new EventSource(api('stream'));
   let evtTimer;
+  let evtHasData = false; // accumulated across the debounce window — the last
+  // event alone can be a countless one that would cancel a pending reload.
   es.addEventListener('message', (msg) => {
     let evt;
     try { evt = JSON.parse(msg.data); } catch { return; }
+    evtHasData = evtHasData || Boolean(evt.count);
     clearTimeout(evtTimer);
-    evtTimer = setTimeout(() => { refreshStatus(); if (evt.count) load(); }, 1500);
+    evtTimer = setTimeout(() => {
+      refreshStatus();
+      if (evtHasData) { evtHasData = false; load(); }
+    }, 1500);
   });
 }
 
@@ -1198,12 +1346,27 @@ async function saveStrength(event) {
 }
 
 function renderProfileEstimate() {
-  const age = Number($('profile-age').value);
+  const age = Number(state.settings && state.settings.age);
   const manual = Number($('profile-max-hr').value);
-  const estimate = Number.isFinite(age) && age >= 5 && age <= 120 ? 220 - age : null;
+  const estimate = Number.isFinite(age) ? 220 - age : null;
   const usingManual = $('profile-max-hr').value !== '' && Number.isFinite(manual);
   $('profile-estimate').textContent = estimate === null ? ''
     : `Age estimate: ${estimate} bpm · using ${usingManual ? `${manual} bpm override` : 'age estimate'}`;
+}
+
+/**
+ * Age is synced from the Google account, so it is shown rather than edited — and the
+ * note says which it is. Presenting the pre-sync fallback as though the account had
+ * reported it would quietly make an assumption look like a measurement.
+ */
+function renderProfileAge() {
+  const s = state.settings || {};
+  $('profile-age').textContent = Number.isFinite(Number(s.age)) ? `${s.age}` : '—';
+  const synced = Number(s.ageSyncedMs);
+  const when = Number.isFinite(synced) && synced > 0 ? ` · updated ${ago(synced)}` : '';
+  const note = { google: `From your Google account${when}`, demo: `From the demo profile${when}` };
+  $('profile-age-source').textContent = note[s.ageSource]
+    || 'Not synced yet — assuming 30 until your Google account reports it';
 }
 
 async function openProfile() {
@@ -1211,13 +1374,16 @@ async function openProfile() {
   $('profile-error').hidden = true;
   try {
     state.settings = await getJson(api('settings'));
-    $('profile-age').value = state.settings.age;
+    renderProfileAge();
     $('profile-max-hr').value = state.settings.maxHeartRateSource === 'manual'
       ? state.settings.maxHeartRate : '';
     renderProfileEstimate();
     dialog.showModal();
   } catch (err) {
-    $('sync-state').textContent = err.message;
+    const error = $('profile-error');
+    error.textContent = `Could not load settings: ${err.message}`;
+    error.hidden = false;
+    dialog.showModal();
   }
 }
 
@@ -1232,7 +1398,6 @@ async function saveProfile(event) {
   try {
     const maxHeartRate = $('profile-max-hr').value;
     state.settings = await sendJson(api('settings'), {
-      age: Number($('profile-age').value),
       maxHeartRate: maxHeartRate === '' ? null : Number(maxHeartRate),
     });
     $('profile-dialog').close();
@@ -1249,6 +1414,9 @@ async function boot() {
   state.date = todayStr();
   state.compare.a = todayStr();
   initEvents();
+  for (const tab of document.querySelectorAll('.tab')) {
+    tab.tabIndex = tab.dataset.view === state.view ? 0 : -1;
+  }
   renderDayBar();
   await refreshStatus();
   await load();

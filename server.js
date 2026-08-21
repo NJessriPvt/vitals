@@ -21,26 +21,10 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-/**
- * Load .env before anything else is required — several lib modules read process.env
- * at module load time, so a loader that runs after them silently has no effect.
- *
- * A real environment variable always wins over the file: in the fleet the secrets
- * come from infra, and a stale committed .env quietly overriding them would be a
- * miserable thing to debug.
- */
-function loadEnvFile(file) {
-  if (!fs.existsSync(file)) return;
-  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
-    const m = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*)$/.exec(line);
-    if (!m) continue;
-    let value = m[2].trim();
-    if ((value.startsWith('"') && value.endsWith('"'))
-      || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
-    if (!(m[1] in process.env)) process.env[m[1]] = value;
-  }
-}
-loadEnvFile(path.join(__dirname, '.env'));
+// Load .env before anything else is required — several lib modules read
+// process.env at module load time, so a loader that runs after them silently
+// has no effect. (lib/env.js itself reads nothing at load time.)
+require('./lib/env').loadEnvFile(path.join(__dirname, '.env'));
 
 const db = require('./lib/db');
 const catalog = require('./lib/catalog');
@@ -50,7 +34,7 @@ const sync = require('./lib/sync');
 const webhook = require('./lib/webhook');
 const demo = require('./lib/demo');
 const {
-  BUCKETS, seriesPayload, summaryPayload, tablePayload, assistantDigest,
+  BUCKETS, seriesPayload, summaryPayload, tablePayload, assistantDigest, TZ_OFFSET_MS,
 } = require('./lib/query');
 const views = require('./lib/views');
 const screens = require('./lib/screens');
@@ -113,8 +97,9 @@ function serveStatic(req, res, pathname) {
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
   const file = path.join(PUBLIC, rel);
   // Never serve outside public/ — a normalised path that escapes the root is the
-  // classic traversal, and this app holds health data.
-  if (!file.startsWith(PUBLIC)) { res.writeHead(403).end(); return; }
+  // classic traversal, and this app holds health data. The separator matters: a
+  // bare prefix check would also admit a sibling like `public-secrets/`.
+  if (file !== PUBLIC && !file.startsWith(PUBLIC + path.sep)) { res.writeHead(403).end(); return; }
   fs.readFile(file, (err, buf) => {
     if (err) { res.writeHead(404, { 'content-type': 'text/plain' }).end('not found'); return; }
     res.writeHead(200, {
@@ -138,18 +123,20 @@ function tzOf(q) {
   const tz = q.get('tz');
   const n = Number(tz);
   if (tz !== null && tz !== '' && Number.isFinite(n)) return n;
-  return Number(process.env.VITALS_TZ_OFFSET_MIN || 240) * 60000;
+  // One source of truth for the house offset (lib/query.js) — two copies of the
+  // "240" default is how the digest and the screens end up on different days.
+  return TZ_OFFSET_MS;
 }
 
 function rangeOf(q) {
   const to = q.get('to') ? Number(q.get('to')) : Date.now();
   const from = q.get('from') ? Number(q.get('from')) : to - 30 * 86400000;
-  // The viewer's UTC offset, so "day" means their civil day (see db.series).
-  const tz = Number(q.get('tz') || 0);
   if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) {
     throw Object.assign(new Error('bad range'), { status: 400 });
   }
-  return { from, to, offsetMs: Number.isFinite(tz) ? tz : 0 };
+  // Same default civil day as every other endpoint — a 0 default here silently
+  // shifted every day boundary for the +4 viewer on the legacy endpoints.
+  return { from, to, offsetMs: tzOf(q) };
 }
 
 
@@ -242,13 +229,18 @@ async function route(req, res, url) {
   if (pathname === '/webhooks/health' && req.method === 'POST') {
     const raw = await readBody(req);
     const result = await webhook.handle(req, raw, {
-      log: (kind, type, msg) => db.addEvent(kind, type, msg),
+      // Fire-and-forget with a swallow: the event log is a status strip, and an
+      // un-awaited addEvent rejection while MySQL blips would kill the replica
+      // (Node exits on unhandled rejections).
+      log: (kind, type, msg) => db.addEvent(kind, type, msg).catch(() => {}),
       onChange: (typeId, from, to) => sync.syncRange(() => oauth.accessToken(), typeId, from, to),
     });
     if (result.body) json(res, result.status, result.body);
     else { res.writeHead(result.status); res.end(); }
     // Answer first, work after — Google retries a slow endpoint.
-    if (result.after) result.after().catch((e) => db.addEvent('error', null, `webhook: ${e.message}`));
+    if (result.after) {
+      result.after().catch((e) => db.addEvent('error', null, `webhook: ${e.message}`).catch(() => {}));
+    }
     return undefined;
   }
 
@@ -403,7 +395,10 @@ async function route(req, res, url) {
     return json(res, ok ? 200 : 404, { ok });
   }
 
-  /** Age estimates max HR; a measured override can replace it for every zone. */
+  /**
+   * Age comes from the Google account (synced, read-only here) and estimates max HR;
+   * a measured override can replace that estimate for every zone.
+   */
   if (pathname === '/api/settings' && req.method === 'GET') {
     const profile = await metrics.getProfile();
     return json(res, 200, {
@@ -417,7 +412,16 @@ async function route(req, res, url) {
     if (!body || Array.isArray(body) || typeof body !== 'object') {
       throw Object.assign(new Error('settings body must be an object'), { status: 400 });
     }
-    const allowed = new Set(['age', 'maxHeartRate']);
+    // Age is read from the Google account, so it is rejected with its own message
+    // rather than lumped in with typos — a client sending it is not guessing at a
+    // field name, it is using an input this app deliberately stopped accepting.
+    if (Object.hasOwn(body, 'age')) {
+      throw Object.assign(
+        new Error('age is read from the Google account and cannot be set here'),
+        { status: 400 },
+      );
+    }
+    const allowed = new Set(['maxHeartRate']);
     const unknown = Object.keys(body).filter((key) => !allowed.has(key));
     if (unknown.length) {
       throw Object.assign(new Error(`unknown settings: ${unknown.join(', ')}`), { status: 400 });
@@ -458,12 +462,23 @@ async function route(req, res, url) {
   }
 
   if (pathname === '/api/demo' && req.method === 'POST') {
+    // Never mix synthetic points into a live account's store — demo data goes into
+    // the same tables, and untangling it afterwards would be a manual purge.
+    if ((await oauth.connected()) && !(await demo.isDemo())) {
+      return json(res, 409, { error: 'refusing to load demo data into a connected account’s store' });
+    }
     const body = await readJson(req);
     const counts = await demo.load(Number(body.days) || 180);
     return json(res, 200, { ok: true, counts });
   }
 
   if (pathname === '/api/demo' && req.method === 'DELETE') {
+    // demo.clear() wipes EVERY table. Outside demo mode that would destroy real
+    // history — including data that has since aged out upstream (this store is
+    // also the archive), so the guard is not optional.
+    if (!(await demo.isDemo())) {
+      return json(res, 409, { error: 'not in demo mode — refusing to clear real data' });
+    }
     await demo.clear();
     return json(res, 200, { ok: true });
   }
@@ -526,7 +541,10 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   Promise.resolve(route(req, res, url)).catch((err) => {
     const status = err.status || 500;
-    if (status >= 500) db.addEvent('error', null, `${url.pathname}: ${err.message}`);
+    // Swallow the log write's own failure: when the pool is down this handler runs
+    // for every request, and an unhandled rejection here turns a 500 into a dead
+    // replica — the exact failure /health exists to catch gracefully.
+    if (status >= 500) db.addEvent('error', null, `${url.pathname}: ${err.message}`).catch(() => {});
     if (!res.headersSent) json(res, status, { error: err.message });
     else res.end();
   });

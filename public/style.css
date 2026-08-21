@@ -144,7 +144,6 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .btn-accent {
   background: var(--accent-dim); border-color: var(--accent); color: var(--accent);
 }
-.btn-icon { padding: 7px 10px; }
 
 /* --- view tabs ------------------------------------------------------------ */
 
@@ -237,20 +236,6 @@ main.loading { opacity: 0.5; transition: opacity 120ms ease; }
 
 /* --- derived insights ----------------------------------------------------- */
 
-.insight-section { display: grid; gap: 12px; }
-.recovery-summary {
-  display: flex; flex-direction: column; gap: 2px;
-  margin: -1px 0 12px; padding: 10px 12px;
-  border-inline-start: 3px solid var(--muted); border-radius: 8px;
-  background: var(--surface-2);
-}
-.recovery-summary strong { font-size: 15px; }
-.recovery-summary span { color: var(--muted); font-size: 10.5px; }
-.recovery-summary.strong { border-color: var(--good); }
-.recovery-summary.low { border-color: var(--bad); }
-.recovery-summary.balanced { border-color: var(--warn); }
-
-.signal-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
 .signal {
   min-width: 0; padding: 9px; border-radius: 9px;
   background: var(--surface-2); border-top: 2px solid var(--muted);
@@ -262,18 +247,6 @@ main.loading { opacity: 0.5; transition: opacity 120ms ease; }
 .signal-value { font-size: 19px; font-weight: 650; margin-top: 2px; }
 .signal-detail { color: var(--muted); font-size: 10px; margin-top: 3px; overflow-wrap: anywhere; }
 
-.fitness-age-summary {
-  display: flex; flex-direction: column; gap: 3px;
-  margin: -1px 0 12px; padding: 11px 12px;
-  border-inline-start: 3px solid var(--muted); border-radius: 8px;
-  background: var(--surface-2);
-}
-.fitness-age-summary.favorable { border-color: var(--good); }
-.fitness-age-summary.unfavorable { border-color: var(--bad); }
-.fitness-age-summary.neutral { border-color: var(--warn); }
-.fitness-age-summary strong { font-size: 13px; }
-.fitness-age-summary span { color: var(--muted); font-size: 10.5px; }
-.fitness-age-value { font-size: 34px; font-weight: 680; line-height: 1; margin-bottom: 2px; }
 .fitness-factor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .fitness-factor {
   min-width: 0; padding: 9px; border-radius: 9px;
@@ -283,7 +256,6 @@ main.loading { opacity: 0.5; transition: opacity 120ms ease; }
 .fitness-factor.unfavorable { border-color: var(--bad); }
 .fitness-factor.neutral { border-color: var(--warn); }
 .fitness-factor-value { font-size: 16px; font-weight: 650; margin-top: 2px; overflow-wrap: anywhere; }
-.fitness-factor-impact { color: var(--text-2); font-size: 9.5px; margin-top: 5px; }
 
 .activity-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .activity-row {
@@ -329,7 +301,6 @@ main.loading { opacity: 0.5; transition: opacity 120ms ease; }
 .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
 .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-2); }
 .legend-swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
-.legend-line { width: 13px; height: 2px; border-radius: 2px; flex: none; }
 
 .tip {
   position: absolute; pointer-events: none; z-index: 5;
@@ -348,6 +319,16 @@ main.loading { opacity: 0.5; transition: opacity 120ms ease; }
 /* --- segmented filter (last X hours, week/month) -------------------------- */
 
 .seg { display: flex; gap: 4px; background: var(--surface-2); padding: 3px; border-radius: 999px; }
+
+/* The chart/table twin toggle in a card head. */
+.table-toggle {
+  margin-left: auto; align-self: flex-start; flex: none;
+  font: inherit; font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 10px; cursor: pointer;
+}
+.table-toggle:hover { color: var(--text); border-color: var(--accent); }
+.table-toggle[aria-pressed="true"] { background: var(--surface-3); color: var(--text); }
 .seg button {
   font: inherit; font-size: 11.5px; padding: 5px 11px; border-radius: 999px;
   border: none; background: transparent; color: var(--text-2); cursor: pointer; white-space: nowrap;
@@ -375,7 +356,6 @@ main.loading { opacity: 0.5; transition: opacity 120ms ease; }
 .data-table th:first-child, .data-table td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface); }
 .data-table thead th { color: var(--muted); font-weight: 500; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; }
 .data-table tbody tr:hover td { background: var(--surface-2); }
-.data-table td.dim { color: var(--muted); }
 
 /* --- setup / notices ------------------------------------------------------ */
 
@@ -412,19 +392,17 @@ main.loading { opacity: 0.5; transition: opacity 120ms ease; }
 }
 .field input:focus-visible, .btn:focus-visible, .step:focus-visible, .tab:focus-visible,
 .dialog-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* A synced value, not an input: same field rhythm, but visibly not a text box. */
+.field-readonly .field-value {
+  padding: 10px 11px; border-radius: 9px;
+  border: 1px dashed var(--border-strong); background: var(--surface-2);
+  color: var(--text); font-variant-numeric: tabular-nums;
+}
+.field-readonly .field-note { color: var(--muted); font-weight: 400; }
 .profile-estimate { color: var(--muted); font-size: 11px; min-height: 1.4em; }
 .form-error { color: var(--bad); font-size: 12px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
-.log { list-style: none; margin: 0; padding: 0; max-height: 190px; overflow: auto; }
-.log li { display: flex; gap: 9px; align-items: baseline; padding: 3px 0; font-size: 11.5px; border-bottom: 1px solid var(--border); }
-.log li:last-child { border-bottom: none; }
-.log-time { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
-.log-kind { flex: none; min-width: 56px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
-.log-kind.error { color: var(--bad); }
-.log-kind.warn { color: var(--warn); }
-.log-kind.sync, .log-kind.realtime { color: var(--good); }
-.log-msg { color: var(--text-2); min-width: 0; overflow-wrap: anywhere; }
 
 /* Keep controls usable on compact phones without making the page wider than the viewport. */
 @media (max-width: 420px) {
@@ -449,8 +427,6 @@ main.loading { opacity: 0.5; transition: opacity 120ms ease; }
   body { font-size: 14px; }
   .metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   main { padding-left: 24px; padding-right: 24px; }
-  .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-  .insight-section > .card:last-child { grid-column: 1 / -1; }
 }
 
 @media (min-width: 1280px) {
@@ -478,7 +454,7 @@ main.loading { opacity: 0.5; transition: opacity 120ms ease; }
   -webkit-backdrop-filter: blur(14px);
 }
 
-.metric-value, .signal-value, .fitness-age-value { font-family: var(--font-num); font-weight: 500; }
+.metric-value, .signal-value { font-family: var(--font-num); font-weight: 500; }
 .ring-num { font-family: var(--font-num); font-weight: 300; font-size: 34px; font-variant-numeric: tabular-nums; }
 .ring-sub { text-transform: uppercase; letter-spacing: 0.14em; }
 .arc-num { font-family: var(--font-num); font-weight: 500; font-size: 17px; font-variant-numeric: tabular-nums; }
@@ -583,8 +559,6 @@ main.loading { opacity: 0.5; transition: opacity 120ms ease; }
 .heatcell { width: var(--hc); height: var(--hc); border-radius: 4px; border: none; cursor: pointer; padding: 0; }
 .heatcell.empty { background: transparent; border: 1px dashed var(--border); cursor: default; }
 .heatcell:not(.empty):hover { outline: 1.5px solid var(--accent); outline-offset: 1px; }
-.heat-scale { display: flex; align-items: center; gap: 4px; margin-top: 8px; color: var(--muted); font-size: 10px; }
-.heat-scale span.swatch { width: 12px; height: 8px; border-radius: 2px; }
 
 /* --- sessions -------------------------------------------------------------- */
 .session-hero { display: flex; flex-direction: column; gap: 10px; }
@@ -713,7 +687,6 @@ main.loading { opacity: 0.5; transition: opacity 120ms ease; }
 .field-row { display: flex; gap: 10px; }
 .field-row .field { flex: 1; }
 
-.arc-wrap { display: flex; align-items: center; gap: 4px; justify-content: space-around; flex-wrap: wrap; }
 
 @media (min-width: 560px) {
   .verdict-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }

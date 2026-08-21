@@ -28,23 +28,24 @@
 <!-- Five rooms, one question each: how am I now · how did I sleep · how is
      training going · what is changing · who am I becoming. -->
 <nav class="tabs" role="tablist" aria-label="Views">
-  <button class="tab" role="tab" data-view="today" aria-selected="true">Today</button>
-  <button class="tab" role="tab" data-view="sleep" aria-selected="false">Sleep</button>
-  <button class="tab" role="tab" data-view="train" aria-selected="false">Train</button>
-  <button class="tab" role="tab" data-view="trends" aria-selected="false">Trends</button>
-  <button class="tab" role="tab" data-view="you" aria-selected="false">You</button>
+  <button class="tab" role="tab" data-view="today" aria-selected="true" aria-controls="view">Today</button>
+  <button class="tab" role="tab" data-view="sleep" aria-selected="false" aria-controls="view" tabindex="-1">Sleep</button>
+  <button class="tab" role="tab" data-view="train" aria-selected="false" aria-controls="view" tabindex="-1">Train</button>
+  <button class="tab" role="tab" data-view="trends" aria-selected="false" aria-controls="view" tabindex="-1">Trends</button>
+  <button class="tab" role="tab" data-view="you" aria-selected="false" aria-controls="view" tabindex="-1">You</button>
 </nav>
 
 <!-- Day stepper for the day-scoped rooms. The date itself is a button: tap it and
      the month overlay opens — one tap to yesterday, two to any day. -->
 <div class="daybar" id="daybar" hidden>
   <button class="step" id="day-prev" type="button" aria-label="Previous day">‹</button>
-  <button class="date" id="day-label" type="button" aria-haspopup="dialog"
-          aria-label="Pick a date"></button>
+  <!-- No aria-label here: it would OVERRIDE the button's visible content, which is
+       the only place the currently shown date is announced. -->
+  <button class="date" id="day-label" type="button" aria-haspopup="dialog"></button>
   <button class="step" id="day-next" type="button" aria-label="Next day">›</button>
 </div>
 
-<main id="view"></main>
+<main id="view" role="tabpanel" aria-label="Current view"></main>
 
 <dialog id="calendar-dialog" class="calendar-dialog" aria-label="Jump to a day">
   <div class="cal-head">
@@ -65,10 +66,11 @@
       </div>
       <button id="profile-close" class="dialog-close" type="button" aria-label="Close profile">×</button>
     </div>
-    <label class="field">
+    <div class="field field-readonly">
       <span>Age</span>
-      <input id="profile-age" name="age" type="number" min="5" max="120" required inputmode="numeric">
-    </label>
+      <output id="profile-age" class="field-value"></output>
+      <small id="profile-age-source" class="field-note"></small>
+    </div>
     <label class="field">
       <span>Max heart rate <small>optional override</small></span>
       <input id="profile-max-hr" name="maxHeartRate" type="number" min="100" max="240"

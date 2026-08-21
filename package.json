@@ -1,7 +1,7 @@
 {
   "name": "vitals",
   "version": "1.0.0",
-  "description": "Your own health dashboard — syncs the Google Health API into local SQLite and charts it.",
+  "description": "Your own health dashboard — syncs the Google Health API into MySQL and charts it.",
   "private": true,
   "type": "commonjs",
   "main": "server.js",
