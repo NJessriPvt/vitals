@@ -15,7 +15,7 @@
 import {
   lineChart, barChart, stackedChart, zoneBars, hypnogram, sparkline,
   ringGauge, arcGauge, ringTrio, corridorChart, overlayChart, heatCalendar,
-  stateStrip, fmtNumber,
+  fmtNumber,
 } from './charts.js';
 
 const $ = (id) => document.getElementById(id);
@@ -225,15 +225,6 @@ function renderToday(d) {
   if (adaptedReason) ringsCard.appendChild(el('p', `Goals ${adaptedReason}`, 'goal-reason'));
   main.appendChild(ringsCard);
 
-  // --- stress timeline ------------------------------------------------------
-  const stress = card('Stress', d.stress.trackedHours
-    ? `${d.stress.trackedHours}h tracked · calm ${Math.round((d.stress.shares.calm || 0) * 100)}%`
-    : 'No tracked hours yet');
-  const stripHost = el('div');
-  stress.appendChild(stripHost);
-  methodNote(stress, { limitation: d.stress.limitation });
-  main.appendChild(stress);
-
   // --- symptom radar (only when it has something to say) --------------------
   if (d.radar.level === 'minor' || d.radar.level === 'major') {
     const radar = card('Symptom radar', `${d.radar.flaggedCount} overnight signals outside your range`);
@@ -314,8 +305,11 @@ function renderToday(d) {
       color: bandVar ? css(bandVar) : css('--muted'),
       size: window.innerWidth < 560 ? 132 : 152,
     });
+    // A counter of strain SPENT (it fills as the day accumulates), never a
+    // budget-remaining gauge — the band on the track is the day's target.
     arcGauge(strainHost, {
-      value: d.strain.today, max: d.strain.max, label: 'strain',
+      value: d.strain.today, max: d.strain.max,
+      label: d.strain.spentSoFar ? 'strain spent' : 'day strain',
       band: d.strain.target, color: seriesOf('cardioLoad'),
       format: (v) => v.toFixed(1),
     });
@@ -332,7 +326,6 @@ function renderToday(d) {
       fcHost.replaceChildren(el('div', 'No wake time measured this morning', 'chart-empty'));
     }
     ringTrio(trioHost, d.rings.map((r) => ({ fraction: r.fraction, color: ringColors[r.id] })));
-    stateStrip(stripHost, d.stress.points);
   });
 }
 

@@ -1174,16 +1174,17 @@ export function overlayChart(host, spec, height = 230) {
 // --- heat calendar -----------------------------------------------------------
 
 /**
- * Weeks × weekdays, single-hue sequential cells (magnitude, one metric — identity
- * lives in the card title). Unmeasured days stay the empty surface: "not tracked"
- * must not look like "did nothing". Cells are buttons — every one is a door to
- * that day.
+ * GitHub-style heat calendar: WEEKS AS COLUMNS, weekdays as rows (Mon-first),
+ * with weekday labels down the left and month labels along the top — so a cell's
+ * date is readable from the structure, no hover or tap required. Single-hue
+ * sequential cells (magnitude; identity lives in the card title). Unmeasured
+ * days stay empty dashed cells: "not tracked" must not look like "did nothing".
+ * Cells remain buttons — every one is still a door to its day.
  */
 export function heatCalendar(host, spec, onPick) {
   host.replaceChildren();
   const t = tokens();
-  const wrap = document.createElement('div');
-  wrap.className = 'heatcal';
+  const off = spec.offsetMs || 0;
   const colOf = (v) => {
     if (v === null || v === undefined || !Number.isFinite(v)) return null;
     const th = spec.thresholds || [];
@@ -1191,23 +1192,62 @@ export function heatCalendar(host, spec, onPick) {
     for (const x of th) { if (x !== null && v > x) step++; }
     return t.ordinal[Math.min(1 + step, t.ordinal.length - 1)];
   };
-  const firstDow = (new Date(spec.cells[0].t + (spec.offsetMs || 0)).getUTCDay() + 6) % 7;
-  for (let i = 0; i < firstDow; i++) {
-    wrap.appendChild(document.createElement('span'));
+
+  const wrap = document.createElement('div');
+  wrap.className = 'heatcal-wrap';
+  const grid = document.createElement('div');
+  grid.className = 'heatcal-gh';
+
+  const lead = (new Date(spec.cells[0].t + off).getUTCDay() + 6) % 7; // Mon = 0
+  const weeks = Math.ceil((lead + spec.cells.length) / 7);
+  // Column 1 is the weekday gutter, row 1 the month labels; cells start at (2,2).
+  grid.style.gridTemplateColumns = `auto repeat(${weeks}, var(--hc))`;
+  grid.style.gridTemplateRows = 'auto repeat(7, var(--hc))';
+
+  for (const [row, label] of [[2, 'Mon'], [4, 'Wed'], [6, 'Fri']]) {
+    const dow = document.createElement('span');
+    dow.className = 'hc-dow';
+    dow.textContent = label;
+    dow.style.gridColumn = '1';
+    dow.style.gridRow = String(row + 1);
+    grid.appendChild(dow);
   }
-  for (const cell of spec.cells) {
+
+  let lastMonth = null;
+  spec.cells.forEach((cell, i) => {
+    const d = new Date(cell.t + off);
+    const week = Math.floor((lead + i) / 7);
+    const dow = (lead + i) % 7;
+
+    // A month label above the first full column of each new month.
+    const month = d.getUTCMonth();
+    if (month !== lastMonth) {
+      if (lastMonth !== null || dow === 0) {
+        const m = document.createElement('span');
+        m.className = 'hc-mon';
+        m.textContent = d.toLocaleDateString([], { month: 'short', timeZone: 'UTC' });
+        m.style.gridColumn = String(week + 2);
+        m.style.gridRow = '1';
+        grid.appendChild(m);
+      }
+      lastMonth = month;
+    }
+
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'heatcell';
     const color = colOf(cell.v);
     if (color) b.style.background = color;
     else b.classList.add('empty');
-    const d = new Date(cell.t + (spec.offsetMs || 0));
+    b.style.gridColumn = String(week + 2);
+    b.style.gridRow = String(dow + 2);
     b.title = `${d.toISOString().slice(0, 10)} — ${cell.v === null ? 'not tracked' : `${fmtNumber(cell.v, spec.precision || 0)} ${spec.unit || ''}`}`;
     b.setAttribute('aria-label', b.title);
     if (onPick) b.addEventListener('click', () => onPick(d.toISOString().slice(0, 10)));
-    wrap.appendChild(b);
-  }
+    grid.appendChild(b);
+  });
+
+  wrap.appendChild(grid);
   host.appendChild(wrap);
 }
 
