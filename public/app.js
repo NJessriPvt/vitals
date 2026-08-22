@@ -643,6 +643,15 @@ function renderTrain(d) {
   season.append(el('p', 'Weekly load · 8 weeks', 'card-sub'), weeksHost);
   main.appendChild(season);
 
+  // --- calories burned per day ----------------------------------------------
+  const cal = card('Calories burned', d.calories.band
+    ? `Daily total · typical day ${fmtNumber(d.calories.band.median, 0)} kcal`
+    : `Daily total · ${d.calories.days} days`);
+  const calHost = el('div', null, 'chart');
+  cal.appendChild(calHost);
+  methodNote(cal, d.calories);
+  main.appendChild(cal);
+
   // --- sessions list (recorded + detected, with their insights) -------------
   const list = card('Sessions · 14 days', d.sessionsMethod);
   if (!d.sessions.length) list.appendChild(el('p', 'Nothing yet.', 'empty-state'));
@@ -752,6 +761,13 @@ function renderTrain(d) {
     };
     withTable(season, weeksHost,
       () => barChart(weeksHost, weeksSpec, window.innerWidth < 560 ? 130 : 160), weeksSpec);
+    const calSpec = {
+      points: d.calories.points,
+      unit: d.calories.unit, precision: d.calories.precision,
+      bucketMs: DAY_MS, label: d.calories.label,
+      color: seriesOf('calories'),
+    };
+    withTable(cal, calHost, () => barChart(calHost, calSpec, height), calSpec);
   });
 }
 
