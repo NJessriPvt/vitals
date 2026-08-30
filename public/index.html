@@ -24,6 +24,14 @@
   </div>
 </header>
 
+<!-- Only shown when Google has refused the refresh token (or nothing is connected).
+     The header's "synced Nd ago" alone reads as healthy, and a dead token is the
+     one failure that needs the user, not a retry. -->
+<div id="auth-banner" class="notice auth-banner" hidden>
+  <span id="auth-banner-text"></span>
+  <a id="auth-banner-link" class="btn btn-accent" href="./auth/start">Sign in with Google</a>
+</div>
+
 <!-- Five rooms, one question each: how am I now · how did I sleep · how is
      training going · what is changing · who am I becoming. -->
 <nav class="tabs" role="tablist" aria-label="Views">

@@ -1181,7 +1181,9 @@ function renderStatus() {
   if (!s) return;
   $('mark').classList.toggle('live', Boolean(s.sync && s.sync.running));
   let label;
-  if (!s.connected) label = s.demo ? 'demo data' : 'not connected';
+  renderAuthBanner(s);
+  if (s.authError) label = 'reconnect needed';
+  else if (!s.connected) label = s.demo ? 'demo data' : 'not connected';
   else if (s.sync.phase === 'tail') label = 'syncing…';
   else if (s.sync.phase === 'backfill') label = 'backfilling…';
   else if (s.sync.lastTailMs) label = `synced ${ago(s.sync.lastTailMs)}`;
@@ -1190,11 +1192,29 @@ function renderStatus() {
   $('btn-sync').disabled = !s.connected;
 }
 
+/**
+ * A refused refresh token leaves `connected` true (the row is still there) and the
+ * header reading "synced 4d ago" — which is how four days of empty screens went
+ * unexplained. Reconnecting takes the user, not a retry, so say so above the fold.
+ */
+function renderAuthBanner(s) {
+  const banner = $('auth-banner');
+  const needsSignIn = Boolean(s.authError) || (!s.connected && !s.demo);
+  banner.hidden = !needsSignIn;
+  if (!needsSignIn) return;
+  $('auth-banner-text').textContent = s.authError
+    ? 'Google stopped accepting the saved sign-in, so nothing has synced since '
+      + (s.sync && s.sync.lastTailMs ? ago(s.sync.lastTailMs) : 'the token expired')
+      + '. Sign in again to resume.'
+    : 'Not connected to Google Health yet.';
+}
+
 function ago(ms) {
   const sec = Math.round((Date.now() - ms) / 1000);
   if (sec < 60) return `${sec}s ago`;
   if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
-  return `${Math.round(sec / 3600)}h ago`;
+  if (sec < 172800) return `${Math.round(sec / 3600)}h ago`;
+  return `${Math.round(sec / 86400)}d ago`;
 }
 
 function renderDayBar() {
@@ -1324,6 +1344,7 @@ function initEvents() {
     try {
       const r = await sendJson(api('sync'));
       if (r.skipped) $('sync-state').textContent = 'already syncing…';
+      else if (r.authError) $('sync-state').textContent = 'reconnect needed';
       await refreshStatus();
       await load();
     } catch (e) {

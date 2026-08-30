@@ -441,7 +441,11 @@ async function route(req, res, url) {
     if (!(await oauth.connected())) return json(res, 409, { error: 'not connected' });
     try {
       const fresh = await sync.syncNow(() => oauth.accessToken(), body.type || null);
-      return json(res, 200, { ok: true, fresh });
+      // A refused refresh token is swallowed per type (the sweep must not fail), so
+      // the sync "succeeds" with 0 fresh. Say why, or the cron, the assistant and the
+      // Sync button all report a healthy sync over a dead connection.
+      const authError = await db.getSetting('auth_error', '');
+      return json(res, 200, authError ? { ok: false, fresh, authError } : { ok: true, fresh });
     } catch (e) {
       // "Already running" is not a failure for an idempotent refresh: the state the
       // caller asked for — a sync happening — is already true. Reporting it as an
