@@ -211,7 +211,14 @@ async function route(req, res, url) {
     const code = q.get('code');
     const state = q.get('state');
     if (err) return json(res, 400, { error: err });
-    if (!checkState(state)) return json(res, 400, { error: 'bad state' });
+    if (!checkState(state)) {
+      // Sign-in failing here has already had three distinct causes (in-memory state,
+      // stale tabs, and whatever comes next); record what actually arrived so the
+      // events strip answers it instead of a guess.
+      const shape = !state ? 'missing' : `${String(state).split('.').length} part(s), len ${String(state).length}`;
+      await db.addEvent('error', null, `auth callback rejected: state ${shape}`).catch(() => {});
+      return json(res, 400, { error: 'bad state' });
+    }
     try {
       await oauth.exchangeCode(code);
       await db.setSetting('auth_error', '');
