@@ -55,7 +55,27 @@ const MIME = {
 };
 
 // One-shot CSRF-ish state for the OAuth round trip.
-const pendingStates = new Map();
+/**
+ * OAuth `state`, replica-proof. A Map of pending states broke at `replicas: 2`:
+ * /auth/start stored the nonce in one replica's memory and Google's redirect landed
+ * on the other, which answered {"error":"bad state"} to every sign-in. The state is
+ * instead self-verifying — ts.nonce.HMAC(clientSecret) — so whichever replica gets
+ * the callback can check it with nothing but the shared secret and the clock.
+ */
+function mintState() {
+  const body = `${Date.now()}.${crypto.randomBytes(16).toString('hex')}`;
+  const mac = crypto.createHmac('sha256', oauth.config().clientSecret).update(body).digest('hex');
+  return `${body}.${mac}`;
+}
+function checkState(state) {
+  const parts = String(state || '').split('.');
+  if (parts.length !== 3) return false;
+  const [ts, nonce, mac] = parts;
+  const expect = crypto.createHmac('sha256', oauth.config().clientSecret).update(`${ts}.${nonce}`).digest('hex');
+  if (mac.length !== expect.length) return false;
+  if (!crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(expect))) return false;
+  return Date.now() - Number(ts) < 600000; // same 10-minute window as before
+}
 
 function json(res, status, body) {
   const payload = JSON.stringify(body);
@@ -182,10 +202,7 @@ async function route(req, res, url) {
     if (!oauth.configured()) {
       return json(res, 400, { error: 'GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are not set' });
     }
-    const state = crypto.randomBytes(16).toString('hex');
-    pendingStates.set(state, Date.now());
-    for (const [k, ts] of pendingStates) if (Date.now() - ts > 600000) pendingStates.delete(k);
-    res.writeHead(302, { location: oauth.authUrl(state, await sync.enabledTypes()) });
+    res.writeHead(302, { location: oauth.authUrl(mintState(), await sync.enabledTypes()) });
     return res.end();
   }
 
@@ -194,8 +211,7 @@ async function route(req, res, url) {
     const code = q.get('code');
     const state = q.get('state');
     if (err) return json(res, 400, { error: err });
-    if (!state || !pendingStates.has(state)) return json(res, 400, { error: 'bad state' });
-    pendingStates.delete(state);
+    if (!checkState(state)) return json(res, 400, { error: 'bad state' });
     try {
       await oauth.exchangeCode(code);
       await db.setSetting('auth_error', '');
