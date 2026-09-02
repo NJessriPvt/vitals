@@ -202,7 +202,9 @@ async function route(req, res, url) {
     if (!oauth.configured()) {
       return json(res, 400, { error: 'GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are not set' });
     }
-    res.writeHead(302, { location: oauth.authUrl(mintState(), await sync.enabledTypes()) });
+    // no-store: a cached copy of this redirect replays an old `state` forever —
+    // exactly the stale-tab loop the self-healing below exists for. Don't feed it.
+    res.writeHead(302, { location: oauth.authUrl(mintState(), await sync.enabledTypes()), 'cache-control': 'no-store' });
     return res.end();
   }
 
@@ -224,8 +226,15 @@ async function route(req, res, url) {
         shape = parts[2] !== expect ? 'signature mismatch — different clientSecret?'
           : `expired — minted ${Math.round((Date.now() - Number(parts[0])) / 60000)} min ago (10 allowed)`;
       }
-      await db.addEvent('error', null, `auth callback rejected: state ${shape}`).catch(() => {});
-      return json(res, 400, { error: 'bad state' });
+      await db.addEvent('error', null, `auth callback rejected: state ${shape} — restarting sign-in`).catch(() => {});
+      // Self-heal instead of dead-ending. Every state failure seen so far — a
+      // restored pre-fix tab, a redirect replayed from history, a consent page left
+      // open past the 10-minute window — is cured by simply starting over, and
+      // 'start' 302s straight to Google, so the user just sees the account chooser
+      // again. No loop guard needed: the flow can only come back here through a
+      // consent screen, which takes a human click each time.
+      res.writeHead(302, { location: 'start', 'cache-control': 'no-store' });
+      return res.end();
     }
     try {
       await oauth.exchangeCode(code);

@@ -1638,13 +1638,19 @@ test('the post-login redirect lands on the app root, not inside /auth', () => {
   // {"error":"not found"}. '../' is correct in both mount modes.
   const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   const callback = src.slice(src.indexOf("pathname === '/auth/callback'"));
-  const redirect = /location:\s*'([^']+)'/.exec(callback);
-  assert.ok(redirect, 'callback must redirect somewhere');
-  assert.strictEqual(redirect[1], '../');
-
+  const redirects = [...callback.matchAll(/location:\s*'([^']+)'/g)].map((m) => m[1]);
   const resolve = (base, rel) => new URL(rel, `http://x${base}`).pathname;
-  assert.strictEqual(resolve('/auth/callback', redirect[1]), '/', 'local mount');
-  assert.strictEqual(resolve('/vitals/auth/callback', redirect[1]), '/vitals/', 'fleet mount');
+
+  // Bad state self-heals by restarting the flow: 'start' is a SIBLING of
+  // /auth/callback, so it must resolve inside /auth in both mount modes.
+  assert.ok(redirects.includes('start'), 'bad state must restart the flow');
+  assert.strictEqual(resolve('/auth/callback', 'start'), '/auth/start', 'local mount');
+  assert.strictEqual(resolve('/vitals/auth/callback', 'start'), '/vitals/auth/start', 'fleet mount');
+
+  // Success lands on the app root.
+  assert.ok(redirects.includes('../'), 'successful login must land on the app root');
+  assert.strictEqual(resolve('/auth/callback', '../'), '/', 'local mount');
+  assert.strictEqual(resolve('/vitals/auth/callback', '../'), '/vitals/', 'fleet mount');
   assert.strictEqual(resolve('/auth/callback', './'), '/auth/', 'the bug this guards');
 });
 
