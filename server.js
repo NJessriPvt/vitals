@@ -215,7 +215,15 @@ async function route(req, res, url) {
       // Sign-in failing here has already had three distinct causes (in-memory state,
       // stale tabs, and whatever comes next); record what actually arrived so the
       // events strip answers it instead of a guess.
-      const shape = !state ? 'missing' : `${String(state).split('.').length} part(s), len ${String(state).length}`;
+      const parts = String(state || '').split('.');
+      let shape;
+      if (!state) shape = 'missing';
+      else if (parts.length !== 3) shape = `${parts.length} part(s), len ${String(state).length} — a pre-HMAC state, i.e. a tab opened before the fix`;
+      else {
+        const expect = crypto.createHmac('sha256', oauth.config().clientSecret).update(`${parts[0]}.${parts[1]}`).digest('hex');
+        shape = parts[2] !== expect ? 'signature mismatch — different clientSecret?'
+          : `expired — minted ${Math.round((Date.now() - Number(parts[0])) / 60000)} min ago (10 allowed)`;
+      }
       await db.addEvent('error', null, `auth callback rejected: state ${shape}`).catch(() => {});
       return json(res, 400, { error: 'bad state' });
     }
