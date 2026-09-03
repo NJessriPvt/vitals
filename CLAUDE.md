@@ -111,6 +111,13 @@ Int64 values arrive as JSON **strings** (`"count": "15"`).
 - **No root-absolute URLs in `public/`.** Deployed, the app sits under a stripped path
   prefix, so `/style.css` works locally and 404s in the fleet. `npm run check:paths`
   gates it and runs in the Docker build.
+- **Screen reads are memoized per replica** (`db.memoized`): zone derivation,
+  reference bands, bucketed series, typeStats/platforms. Timestamps in memo keys
+  quantize to the minute (request windows end at `Date.now()`, which would
+  otherwise mint a fresh key per request); `putPoints` invalidates reads/stats so
+  a manual sync shows its points immediately. Never bypass `series`/`aggregate`
+  with hand-written point queries in a screen path — the covering index
+  `(data_type, anchor_ms, value)` plus this memo is why screens are fast.
 - **`agg` is a property of the measurement, not a UI preference.** Summing a heart
   rate produces a meaningless number. Don't make it configurable.
 
