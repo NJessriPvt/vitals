@@ -123,6 +123,11 @@ function serveStatic(req, res, pathname) {
   fs.readFile(file, (err, buf) => {
     if (err) { res.writeHead(404, { 'content-type': 'text/plain' }).end('not found'); return; }
     res.writeHead(200, {
+      // no-cache (NOT no-store): revalidate every load. Without any header the
+      // browser caches these heuristically, and a phone that held yesterday's
+      // app.js kept showing yesterday's UI — a sign-in banner that outlived the
+      // sign-in. These five files are small; a conditional fetch is cheap.
+      'cache-control': 'no-cache',
       'content-type': MIME[path.extname(file)] || 'application/octet-stream',
       'cache-control': 'no-cache',
     });
