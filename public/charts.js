@@ -97,6 +97,29 @@ function fmtNumber(v, precision = 0, compact = false) {
   });
 }
 
+/**
+ * ONE duration shape for the whole app: "48m", "8h", "7h 42m". Every screen used
+ * to build its own ("1.5h", "49 min", "7h 12m"), which is how debt and asleep
+ * hours came to disagree about what an hour looks like. Input in hours.
+ */
+function fmtDuration(hours) {
+  if (hours === null || hours === undefined || !Number.isFinite(hours)) return '—';
+  const total = Math.round(hours * 60);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (h === 0) return `${m}m`;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+/** Signed number with a real minus (U+2212), never a hyphen prefixed to a value
+ * that may already be negative — the "−−3 bpm" tile. */
+function fmtSigned(v, precision = 0, unit = '') {
+  if (v === null || v === undefined || !Number.isFinite(v)) return '—';
+  const abs = fmtNumber(Math.abs(v), precision);
+  const sign = v < 0 ? '−' : v > 0 ? '+' : '';
+  return `${sign}${abs}${unit ? ` ${unit}` : ''}`;
+}
+
 function fmtTime(ms, bucketMs) {
   const d = new Date(ms);
   if (bucketMs === 0 || bucketMs < 3600000) {
@@ -1305,4 +1328,4 @@ export function stateStrip(host, points, opts = {}) {
   }
 }
 
-export { tokens, fmtNumber, fmtTimeFull };
+export { tokens, fmtNumber, fmtTimeFull, fmtDuration, fmtSigned };

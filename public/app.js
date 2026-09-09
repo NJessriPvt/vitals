@@ -15,7 +15,7 @@
 import {
   lineChart, barChart, stackedChart, zoneBars, hypnogram, sparkline,
   ringGauge, arcGauge, ringTrio, corridorChart, overlayChart, heatCalendar,
-  stateStrip, tableView, fmtNumber,
+  stateStrip, tableView, fmtNumber, fmtDuration, fmtSigned,
 } from './charts.js';
 
 const $ = (id) => document.getElementById(id);
@@ -93,8 +93,7 @@ function segmented(options, current, onPick) {
   return wrap;
 }
 
-const hhmm = (h) => (h === null || h === undefined ? '—'
-  : `${Math.floor(h)}h ${Math.round((h % 1) * 60)}m`);
+const hhmm = fmtDuration;
 const timeOf = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 async function getJson(url) {
@@ -190,7 +189,7 @@ function renderToday(d) {
   main.className = 'room';
 
   // --- hero: readiness with strain and battery orbiting ---------------------
-  const hero = card('Readiness', `${d.readiness.availableContributors} signals vs your 28-day baselines`);
+  const hero = card('Readiness', `${d.readiness.availableContributors} signals z-scored against your 28-day history`);
   hero.classList.add('span-2');
   const orbital = el('div', null, 'orbital');
   const left = el('div', null, 'side');
@@ -296,7 +295,7 @@ function renderToday(d) {
       item.appendChild(el('div', s.label, 'signal-label'));
       const v = el('div', String(s.current), 'signal-value');
       v.appendChild(el('span', ` ${s.unit}`, 'metric-unit'));
-      item.append(v, el('div', s.band ? `your range ${s.band.p10}–${s.band.p90}` : '', 'signal-detail'));
+      item.append(v, el('div', s.band ? `your range ${s.band.lo}–${s.band.hi}` : '', 'signal-detail'));
       grid.appendChild(item);
     }
     radar.appendChild(grid);
@@ -324,7 +323,7 @@ function renderToday(d) {
   strip.append(el('b', asleepH === null ? '—' : hhmm(asleepH)));
   const sub = el('div', null, 'sub');
   sub.append(document.createTextNode(
-    `need ${d.sleepStrip.needHours ? hhmm(d.sleepStrip.needHours) : '—'} · debt ${d.sleepStrip.debtHours === null ? '—' : `${d.sleepStrip.debtHours}h`}`
+    `need ${hhmm(d.sleepStrip.needHours)} · debt ${hhmm(d.sleepStrip.debtHours)}`
     + (d.sleepStrip.mainHours !== null && d.sleepStrip.mainHours !== asleepH ? ` · in bed ${hhmm(d.sleepStrip.mainHours)}` : '')
     + (d.sleepStrip.efficiencyPercent ? ` · ${d.sleepStrip.efficiencyPercent}% efficient` : ''),
   ));
@@ -333,7 +332,7 @@ function renderToday(d) {
   if (d.sleepStrip.naps && d.sleepStrip.naps.length) {
     for (const n of d.sleepStrip.naps) {
       const row = el('div', null, 'nap-row');
-      row.append(el('b', hhmm(n.hours)), el('span', `nap at ${timeOf(n.start)} · repaid ${n.debtCreditHours}h of debt`));
+      row.append(el('b', hhmm(n.hours)), el('span', `${n.long ? 'daytime sleep' : 'nap'} at ${timeOf(n.start)} · repaid ${hhmm(n.debtCreditHours)} of debt`));
       sleep.appendChild(row);
     }
   }
@@ -428,15 +427,15 @@ function renderSleepScreen(d) {
       d.need.tonightNeedHours ? { text: `need ${hhmm(d.need.tonightNeedHours)}` } : null, 'sleep'),
     metric('In bed', hhmm(n ? n.hoursInBed : null), '', { text: 'asleep + awake in session' }, 'sleep'),
     metric('Efficiency', n && n.efficiencyPercent !== null ? n.efficiencyPercent : null, '%',
-      { text: 'asleep ÷ in bed' }, 'sleep'),
-    metric('Sleep debt', d.need.debtHours === null ? null : d.need.debtHours, 'h',
-      { derived: true, text: `over 14 nights` }, 'sleep'),
+      n && n.stagesEstimated ? { derived: true, text: 'no stages recorded — assumed 92%' } : { text: 'asleep ÷ in bed' }, 'sleep'),
+    metric('Sleep debt', hhmm(d.need.debtHours), '',
+      { derived: true, text: `over ${d.need.nightsUsed} measured nights` }, 'sleep'),
     metric('Consistency', d.consistency.score, '%',
       d.consistency.score === null
         ? { text: `needs ${d.consistency.requiredNights} nights` }
         : { text: `±${d.consistency.spreadMinutes} min over ${d.consistency.nights} nights` }, 'sleep'),
     metric('Naps today', d.naps.length, '', d.naps.length
-      ? { text: `repaid ${d.naps.reduce((a, x) => a + x.debtCreditHours, 0).toFixed(1)}h debt` } : null, 'sleep'),
+      ? { text: `repaid ${hhmm(d.naps.reduce((a, x) => a + x.debtCreditHours, 0))} debt` } : null, 'sleep'),
   );
   main.appendChild(metrics);
 
@@ -450,10 +449,10 @@ function renderSleepScreen(d) {
 
   const needCard = card('Need & debt', 'Rise-style: a balance in hours, not a nightly grade');
   needCard.appendChild(reportRows([
-    ['Your learned need', d.need.baseNeedHours ? hhmm(d.need.baseNeedHours) : '—'],
+    [d.need.baseSource === 'setting' ? 'Your set need' : 'Base need (adult default)', d.need.baseNeedHours ? hhmm(d.need.baseNeedHours) : '—'],
     ['Tonight’s need', d.need.tonightNeedHours ? hhmm(d.need.tonightNeedHours) : '—'],
-    ['Debt to repay', d.need.debtHours === null ? '—' : `${d.need.debtHours} h`],
-    ['Nights it learned from', String(d.need.nightsUsed)],
+    ['Debt to repay', hhmm(d.need.debtHours)],
+    ['Nights measured', String(d.need.nightsUsed)],
   ]));
   methodNote(needCard, d.need);
   main.appendChild(needCard);
@@ -486,7 +485,7 @@ function renderSleepScreen(d) {
     for (const nap of d.napsWeek) {
       const row = el('div', null, 'nap-row');
       row.append(el('b', hhmm(nap.hours)),
-        el('span', `${prettyMs(nap.day)} at ${timeOf(nap.start)} · repaid ${nap.debtCreditHours}h`));
+        el('span', `${prettyMs(nap.day)} at ${timeOf(nap.start)} · repaid ${hhmm(nap.debtCreditHours)}`));
       napCard.appendChild(row);
     }
     main.appendChild(napCard);
@@ -553,14 +552,14 @@ function sessionStatItems(s, extended) {
       ['Avg', s.averageHeartRate ? `${s.averageHeartRate} bpm` : '—'],
       ['Max', s.maxHeartRate ? `${s.maxHeartRate} bpm` : '—'],
       ['Burned', cal],
-      ['HRR', s.heartRateRecovery ? `−${s.heartRateRecovery.dropBpm}` : '—'],
+      ['HRR', s.heartRateRecovery ? fmtSigned(-s.heartRateRecovery.dropBpm) : '—'],
     ]
     : [
       ['Effort', s.load === null ? '—' : String(Math.round(s.load))],
       ['Strain', s.strain === null ? '—' : s.strain.toFixed(1)],
       ['Avg HR', s.averageHeartRate ? `${s.averageHeartRate}` : '—'],
       ['Burned', cal],
-      ['HR recovery', s.heartRateRecovery ? `−${s.heartRateRecovery.dropBpm} bpm` : '—'],
+      ['HR recovery', s.heartRateRecovery ? fmtSigned(-s.heartRateRecovery.dropBpm, 0, 'bpm') : '—'],
     ];
 }
 
@@ -590,7 +589,7 @@ function renderTrain(d) {
     const title = el('div', null, 'session-title');
     title.append(el('strong', s.label),
       el('span', null, `kind-chip ${s.kind}`),
-      el('span', `${prettyMs(s.start)} ${timeOf(s.start)}–${timeOf(s.end)} · ${s.durationMinutes} min`, 'when'));
+      el('span', `${prettyMs(s.start)} ${timeOf(s.start)}–${timeOf(s.end)} · ${hhmm(s.durationMinutes / 60)}`, 'when'));
     title.querySelector('.kind-chip').textContent = s.kind === 'detected' ? 'detected' : 'recorded';
     wrap.appendChild(title);
     wrap.appendChild(sessionStats(s));
@@ -604,9 +603,9 @@ function renderTrain(d) {
   const cd = el('span', null, `countdown-chip ${d.countdown.state}`);
   const cdText = {
     ready: ['Recovered — ', 'ready for a hard session'],
-    'easy-ok': ['Nearly there — ', `easy session is fine · ${d.countdown.hoursRemaining}h to full`],
-    recovering: ['Recovering — ', `${d.countdown.hoursRemaining}h to full`],
-  }[d.countdown.state] || ['Recovering — ', `${d.countdown.hoursRemaining}h to full`];
+    'easy-ok': ['Nearly there — ', `easy session is fine · ${hhmm(d.countdown.hoursRemaining)} to full`],
+    recovering: ['Recovering — ', `${hhmm(d.countdown.hoursRemaining)} to full`],
+  }[d.countdown.state] || ['Recovering — ', `${hhmm(d.countdown.hoursRemaining)} to full`];
   cd.append(document.createTextNode(cdText[0]), el('b', cdText[1]));
   cd.title = d.countdown.method || '';
   if (d.countdown.method) { cd.setAttribute('aria-label', `${cdText[0]}${cdText[1]}. ${d.countdown.method}`); cd.tabIndex = 0; }
@@ -664,7 +663,7 @@ function renderTrain(d) {
     strong.appendChild(el('span', s.kind === 'detected' ? 'detected' : 'recorded', `kind-chip ${s.kind}`));
     left.appendChild(strong);
     head.append(left,
-      el('span', `${prettyMs(s.start)} · ${timeOf(s.start)} · ${s.durationMinutes} min`));
+      el('span', `${prettyMs(s.start)} · ${timeOf(s.start)} · ${hhmm(s.durationMinutes / 60)}`));
     row.appendChild(head);
     const stats = el('div', null, 'activity-stats');
     for (const [label, value] of sessionStatItems(s, true)) {

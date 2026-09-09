@@ -47,7 +47,7 @@ empty states live data gets. No real health data is published in this repository
 
 Age is read from your Google account, not typed in — there is no profile screen.
 Max heart rate defaults to the `220 − age` estimate; a measured max can still be
-set through `POST /api/settings` (`maxHeartRate`), because a measured max beats
+set through `POST /api/settings` (`maxHeartRate`; `sleepNeedHours` sets the 6–11 h sleep-need base), because a measured max beats
 any estimate.
 
 ## The five rooms

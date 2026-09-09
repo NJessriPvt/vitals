@@ -194,13 +194,39 @@ substitute zero.
   both shapes counts the same time twice.
 - Recovery is a transparent personal-baseline comparison, never a claim to reproduce
   WHOOP's proprietary score. Keep `derived`, `method`, and `limitation` in the payload.
-- Fitness age is likewise an experimental, whole-year trend estimate — never WHOOP Age,
-  biological age or a diagnosis. It needs at least three well-covered signals, keeps
-  unavailable inputs null, exposes each bounded contribution, and never moves more than
-  ten years from profile age. RHR and HRV compare with the user's own prior 28 days.
-- **Readiness**: an unavailable input lowers COVERAGE, never the score — losing a
-  neutral signal must not move the number, and fewer than two of HRV/RHR/sleep means
-  no score at all (`calibrating`), not a default one.
+- Fitness age is an experimental, whole-year estimate against PUBLISHED NORMS —
+  never WHOOP Age, biological age or a diagnosis. Five bounded drivers: nightly HRV
+  vs Lifelines age-band medians (Tegegne 2020, n = 84,772, lifted e^0.30 to the
+  nocturnal level — the one uncited constant, kept identical to Cadence's), resting
+  HR vs Quer 2020 (n = 92,457), VO2max = 15.3·HRmax/HRrest (Uth 2004) vs FRIEND
+  decade medians at HALF weight while max HR is an age estimate, activity vs WHO
+  150 min/wk, sleep outside 7–9 h. Norms are the male/female mean (sex is unknown
+  here). Needs HRV, RHR and one more driver; capped ±8 years. It used to score RHR
+  and HRV on CHANGE vs the prior month, so a stable excellent reader scored zero and
+  a training block "aged" them — a level needs a referent; do not go back.
+- **Readiness is a z-score composite**: every input against the person's own 28-day
+  history (personal SD with a per-metric floor — HRV 0.08 on ln, RHR 1.5 bpm), clamped
+  ±3, combined as `50 + 20 × Σw·z / Σw` over the inputs that ARE measured (HRV .40,
+  RHR .25, sleep .25, a .10 pool for breathing / skin temp / yesterday's strain);
+  bands 67/33. Dividing by Σw is what makes "an unavailable input lowers COVERAGE,
+  never the score" literally true; fewer than two of HRV/RHR/sleep means no score
+  (`calibrating`). It is CALIBRATED BY TEST — 4,000 stationary mornings must read
+  mean ≈ 50, SD 8–16, a tenth high and a tenth low, and planted alcohol / late-bed /
+  illness nights must cost their points. The additive base-62 model this replaced
+  had no distributional test and four terms that could only subtract; do not bring
+  back raw-percent caps.
+- **Resting HR is ONE derivation**: the device's daily figure, else the mean of the
+  lowest decile of one-minute averages over the night (22:00–08:00, ≥ 60 minutes;
+  `db.sleepingHeartRateDaily`, surfaced by `insights.restingDaily`). Today's value,
+  its 28-day baseline, fitness age and the assistant digest all read it — they used
+  to take three different windows (a single-sample 00–08 min, a whole-day min, a
+  20–08 min) and compare unlike things. A sample minimum of 2-second PPG is an
+  artefact, never a level.
+- **The symptom radar is z-gated, not quantile-gated.** Each vital is a z against
+  the flat 28-day mean and floored SD (never an EW mean — it chases a fever and goes
+  quiet); a signal counts at 1.8 σ the wrong way, the card needs two. p10–p90 bands
+  flagged a tenth of ordinary nights per signal by construction; the test holds the
+  joint card under 3 % of stationary nights.
 - **Strain is a TRIMP transform** (`21·(1−e^(−load/350))`), stated as such — never
   present it as WHOOP's algorithm. Its daily input prefers the device's own
   `time-in-heart-rate-zone` minutes (one cheap parts query) and only recomputes
@@ -208,15 +234,30 @@ substitute zero.
 - **A rest day is load 0; a pre-history day is null.** "Did not train" decays
   fitness; "before the account existed" must not invent a detraining spiral. The
   fitness/fatigue EWMAs seed at the first measured day for the same reason.
-- **Sleep need/debt learns from measured nights only** (≥4 h; sub-4 h sessions are
-  tracking noise). Naps split from the main night and repay debt at half rate,
-  visibly. Consistency does clock arithmetic on an 18:00-anchored scale so a 23:40
-  and a 00:20 bedtime are 40 minutes apart, not 23 hours.
+- **Sleep need is anchored on physiology, never on habit**: base 8 h (or the
+  `sleepNeedHours` setting, 6–11), plus five minutes per strain point over 10 (≤ 45
+  min) and **5 %** of standing debt. The median-of-your-own-nights base it replaced
+  was circular (a 6h40 habit became a 6h40 need and readiness congratulated it), and
+  Σ0.85^i over 14 nights is 5.08, so the old 25 % repayment gave the need↔debt loop
+  a gain of 1.27 — above one, every short sleeper chased the cap. Debt comes from
+  measured nights only (≥ 4 h; sub-4 h sessions are tracking noise); long nights
+  repay at half rate; naps credit at half rate AND enter the debt arithmetic
+  (`nightHours` returns main + ½ naps — the credit used to be printed and never
+  applied). Sessions on the same day ≤ 90 min apart are STITCHED into one night with
+  the gap as awake-in-bed (`stitchSessions`); everything that is not the night is
+  listed under `naps`, a > 3 h daytime sleep flagged `long` rather than dropped. A
+  stageless (CLASSIC) record is 92 % asleep, `stagesEstimated: true`, not 100 %
+  efficient. Consistency does clock arithmetic on an 18:00-anchored scale so a
+  23:40 and a 00:20 bedtime are 40 minutes apart, not 23 hours.
 - **The symptom radar needs joint deviation** — two adverse signals for minor,
   three for major, at least three measurable vitals to speak at all — and its
   wording stays "signs of strain", never illness.
-- **Correlation cards** demand n ≥ 14 and |r| ≥ 0.3, report the above/below-median
-  split in real units, and say "associated", never "causes".
+- **Correlation cards** are Spearman ρ over ≥ 21 paired days with every candidate
+  pair corrected as ONE Benjamini–Hochberg family at FDR 0.10, plus a floor on the
+  effect in real units; they report the above/below-median split in real units and
+  say "associated", never "causes". The old `n ≥ 14, |r| ≥ 0.3` rule was p ≈ 0.3 per
+  test and put a card on a noise month more often than not; the test holds it under
+  20 % of noise months.
 - The strength log (`strength_log` table, `/api/strength`) is the one manual
   input; its volume index sits BESIDE cardio load and is never summed into it.
 - The demo workout-window cadence must remain no coarser than the one-minute coverage

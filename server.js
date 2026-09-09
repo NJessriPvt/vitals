@@ -466,7 +466,7 @@ async function route(req, res, url) {
         { status: 400 },
       );
     }
-    const allowed = new Set(['maxHeartRate']);
+    const allowed = new Set(['maxHeartRate', 'sleepNeedHours']);
     const unknown = Object.keys(body).filter((key) => !allowed.has(key));
     if (unknown.length) {
       throw Object.assign(new Error(`unknown settings: ${unknown.join(', ')}`), { status: 400 });

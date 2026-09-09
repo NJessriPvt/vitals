@@ -253,8 +253,10 @@ test('sleep without stages still plots (CLASSIC records have none)', () => {
     name: 'sleeps/2',
     sleep: { startTime: '2026-04-20T23:00:00Z', endTime: '2026-04-21T06:00:00Z', sleepType: 'CLASSIC' },
   }, catalog.get('sleep'), notes);
-  assert.strictEqual(row.value, 7 * 3600000);
+  assert.strictEqual(row.value, Math.round(7 * 3600000 * 0.92),
+    'a stageless night is 92% asleep, not 100% efficient');
   assert.ok(row.parts.LIGHT > 0, 'must still produce a drawable segment');
+  assert.strictEqual(row.fields.stagesEstimated, true, 'and says the split is an estimate');
 });
 
 test('sleep anchors on wake time, everything else on start', () => {
@@ -765,51 +767,66 @@ test('recovery outlook compares physiology with a personal baseline', () => {
 const coveredFitnessSignals = (overrides = {}) => ({
   sleep: { averageHours: 8, days: 28 },
   training: { weeklyMinutes: 150, days: 28 },
-  restingHeartRate: { recentMedian: 60, priorMedian: 60, recentDays: 28, priorDays: 28 },
-  hrv: { recentMedian: 50, priorMedian: 50, recentDays: 28, priorDays: 28 },
+  restingHeartRate: { recentMedian: 65.5, recentDays: 28 },
+  hrv: { recentMedian: 45, recentDays: 28 }, // the 40-year-old nocturnal norm
+  maxHeartRate: { value: 180, source: 'age-estimate' },
   ...overrides,
 });
 
 test('favorable fitness signals produce a younger estimate', () => {
   const result = insights.buildFitnessAge(40, coveredFitnessSignals({
-    sleep: { averageHours: 8.5, days: 28 },
-    training: { weeklyMinutes: 250, days: 28 },
-    restingHeartRate: { recentMedian: 55, priorMedian: 60, recentDays: 28, priorDays: 28 },
-    hrv: { recentMedian: 60, priorMedian: 50, recentDays: 28, priorDays: 28 },
+    sleep: { averageHours: 8, days: 28 },
+    training: { weeklyMinutes: 300, days: 28 },
+    restingHeartRate: { recentMedian: 52, recentDays: 28 },
+    hrv: { recentMedian: 70, recentDays: 28 },
   }));
-  assert.ok(result.estimate < 40);
+  assert.ok(result.estimate < 40, `got ${result.estimate}`);
   assert.strictEqual(result.direction, 'younger');
   assert.strictEqual(result.coverage.confidence, 'high');
-  assert.ok(result.factors.every((factor) => factor.status === 'favorable'));
+  assert.ok(result.factors.filter((f) => f.available && f.id !== 'sleep').every((f) => f.status === 'favorable'));
 });
 
 test('unfavorable fitness signals produce an older estimate', () => {
   const result = insights.buildFitnessAge(40, coveredFitnessSignals({
-    sleep: { averageHours: 6, days: 28 },
+    sleep: { averageHours: 5.5, days: 28 },
     training: { weeklyMinutes: 20, days: 28 },
-    restingHeartRate: { recentMedian: 66, priorMedian: 60, recentDays: 28, priorDays: 28 },
-    hrv: { recentMedian: 38, priorMedian: 50, recentDays: 28, priorDays: 28 },
+    restingHeartRate: { recentMedian: 78, recentDays: 28 },
+    hrv: { recentMedian: 22, recentDays: 28 },
   }));
   assert.ok(result.estimate > 40);
   assert.strictEqual(result.direction, 'older');
 });
 
+test('a level, not a change: a stable excellent resting HR keeps earning', () => {
+  // The old model scored RHR and HRV on CHANGE vs the prior month, so a steady
+  // athlete scored zero and a training block that lifted RHR 4 bpm "aged" them.
+  const steady = insights.buildFitnessAge(40, coveredFitnessSignals({
+    restingHeartRate: { recentMedian: 50, recentDays: 28 },
+  }));
+  const rhr = steady.factors.find((f) => f.id === 'resting-heart-rate');
+  assert.strictEqual(rhr.status, 'favorable');
+  assert.ok(rhr.detail.includes('n = 92,457'), 'the norm is cited on the factor');
+});
+
 test('neutral fitness signals stay aligned with profile age', () => {
-  const result = insights.buildFitnessAge(40, coveredFitnessSignals());
-  assert.strictEqual(result.estimate, 40);
-  assert.strictEqual(result.deltaYears, 0);
+  const result = insights.buildFitnessAge(40, coveredFitnessSignals({
+    hrv: { recentMedian: insights.fitnessNorms.hrvAt(40), recentDays: 28 },
+    restingHeartRate: { recentMedian: insights.fitnessNorms.restingHr, recentDays: 28 },
+  }));
+  assert.strictEqual(result.deltaYears, 0, `a person on every median reads their own age, got ${result.deltaYears}`);
   assert.strictEqual(result.direction, 'aligned');
-  assert.ok(result.factors.every((factor) => factor.status === 'neutral'));
+  assert.strictEqual(result.factors.find((f) => f.id === 'cardio').available, false,
+    'an age-estimated max HR is not a cardio measurement');
+  assert.strictEqual(result.coverage.confidence, 'high', 'and its absence does not cost confidence');
 });
 
 test('fitness age stays unavailable when coverage is insufficient', () => {
   const result = insights.buildFitnessAge(40, coveredFitnessSignals({
-    restingHeartRate: { recentMedian: null, priorMedian: null, recentDays: 3, priorDays: 2 },
-    hrv: { recentMedian: null, priorMedian: null, recentDays: 0, priorDays: 0 },
+    restingHeartRate: { recentMedian: null, recentDays: 3 },
+    hrv: { recentMedian: null, recentDays: 0 },
   }));
   assert.strictEqual(result.estimate, null);
   assert.strictEqual(result.deltaYears, null);
-  assert.strictEqual(result.coverage.availableSignals, 2);
   assert.strictEqual(result.coverage.confidence, 'insufficient');
   const missing = result.factors.find((factor) => factor.id === 'hrv');
   assert.strictEqual(missing.available, false);
@@ -818,20 +835,25 @@ test('fitness age stays unavailable when coverage is insufficient', () => {
 
 test('fitness age clamps extreme inputs to a plausible adjustment', () => {
   const younger = insights.buildFitnessAge(40, coveredFitnessSignals({
-    sleep: { averageHours: 14, days: 28 },
+    sleep: { averageHours: 8, days: 28 },
     training: { weeklyMinutes: 2000, days: 28 },
-    restingHeartRate: { recentMedian: 30, priorMedian: 100, recentDays: 28, priorDays: 28 },
-    hrv: { recentMedian: 500, priorMedian: 10, recentDays: 28, priorDays: 28 },
+    restingHeartRate: { recentMedian: 30, recentDays: 28 },
+    hrv: { recentMedian: 500, recentDays: 28 },
   }));
   const older = insights.buildFitnessAge(40, coveredFitnessSignals({
     sleep: { averageHours: 2, days: 28 },
     training: { weeklyMinutes: 0, days: 28 },
-    restingHeartRate: { recentMedian: 120, priorMedian: 40, recentDays: 28, priorDays: 28 },
-    hrv: { recentMedian: 5, priorMedian: 100, recentDays: 28, priorDays: 28 },
+    restingHeartRate: { recentMedian: 120, recentDays: 28 },
+    hrv: { recentMedian: 5, recentDays: 28 },
   }));
-  assert.strictEqual(younger.deltaYears, -10);
-  assert.strictEqual(older.deltaYears, 10);
+  assert.ok(younger.deltaYears <= -6 && younger.deltaYears >= -8, `capped at −8, got ${younger.deltaYears}`);
+  assert.ok(older.deltaYears >= 6 && older.deltaYears <= 8, `capped at +8, got ${older.deltaYears}`);
   assert.ok(younger.estimate >= 18 && older.estimate <= 90);
+  const measured = insights.buildFitnessAge(40, coveredFitnessSignals({
+    restingHeartRate: { recentMedian: 48, recentDays: 28 }, maxHeartRate: { value: 190, source: 'manual' },
+  }));
+  assert.strictEqual(measured.factors.find((f) => f.id === 'cardio').status, 'favorable',
+    'a measured max HR unlocks the cardio driver');
 });
 
 testAsync('fitness age integrates recent database trends', async () => {
@@ -864,10 +886,13 @@ testAsync('fitness age integrates recent database trends', async () => {
     }
   }
   await db.putPoints(rows);
-  const result = await insights.fitnessAgeOutlook(start + 56 * 86400000, 0, { age: 40 }, 8);
-  assert.ok(result.estimate < 40);
-  assert.strictEqual(result.coverage.availableSignals, 4);
+  const result = await insights.fitnessAgeOutlook(start + 56 * 86400000, 0,
+    { age: 40, maxHeartRate: 185, maxHeartRateSource: 'manual' }, 8);
+  assert.ok(result.estimate < 40, `got ${result.estimate}`);
+  assert.strictEqual(result.coverage.availableSignals, 5);
   assert.strictEqual(result.coverage.confidence, 'high');
+  const rhr = result.factors.find((f) => f.id === 'resting-heart-rate');
+  assert.strictEqual(rhr.value, 56, 'the device daily figure wins over the derived one');
 });
 
 // ---------------------------------------------------------------------------
@@ -899,56 +924,74 @@ test('demo point ids stay unique across adjacent days', () => {
 // scores — readiness, strain, battery, stress: bounded and honest about absence
 // ---------------------------------------------------------------------------
 
-const neutralReadiness = (overrides = {}) => ({
-  hrv: { current: 50, baseline: 50, baselineCount: 20 },
-  restingHeartRate: { current: 58, baseline: 58, baselineCount: 20 },
-  sleep: { hours: 7.2, needHours: 8 },
-  debtHours: 0,
-  temperature: { deviation: 0 },
-  respiratoryRate: { current: 14, baseline: 14, baselineCount: 20 },
-  yesterdayStrain: { value: 10, typical: 10 },
-  ...overrides,
-});
+// Deterministic pseudo-random history so the tests are repeatable.
+const lcg = (seed) => () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+const gauss = (rnd) => { const u = 1 - rnd(); const v = rnd(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+const hist = (rnd, mean, sd, n = 28) => Array.from({ length: n }, () => mean + sd * gauss(rnd));
+
+const neutralReadiness = (overrides = {}) => {
+  const rnd = lcg(7);
+  return {
+    hrv: { current: 50, history: hist(rnd, 50, 7) },
+    restingHeartRate: { current: 58, history: hist(rnd, 58, 2.5) },
+    sleep: { hours: 6.8, needHours: 8 }, // 85 % of need: the neutral point
+    temperature: { deviation: 0, history: hist(rnd, 0, 0.2) },
+    respiratoryRate: { current: 14, history: hist(rnd, 14, 0.6) },
+    yesterdayStrain: { value: 10, history: hist(rnd, 10, 3) },
+    ...overrides,
+  };
+};
 
 test('an ordinary morning reads as an ordinary readiness', () => {
   const r = scores.buildReadiness(neutralReadiness());
-  assert.ok(r.score >= 55 && r.score <= 70, `neutral inputs should land in the 60s, got ${r.score}`);
+  assert.ok(r.score >= 42 && r.score <= 58, `neutral inputs should land near 50, got ${r.score}`);
   assert.strictEqual(r.band, 'moderate');
 });
 
 test('readiness moves with the body, in both directions, bounded', () => {
+  const base = neutralReadiness();
   const high = scores.buildReadiness(neutralReadiness({
-    hrv: { current: 60, baseline: 50, baselineCount: 20 },
-    restingHeartRate: { current: 54, baseline: 58, baselineCount: 20 },
+    hrv: { current: 64, history: base.hrv.history },
+    restingHeartRate: { current: 53, history: base.restingHeartRate.history },
     sleep: { hours: 8.4, needHours: 8 },
   }));
-  assert.strictEqual(high.band, 'high');
+  assert.strictEqual(high.band, 'high', `got ${high.score}`);
 
   const low = scores.buildReadiness(neutralReadiness({
-    hrv: { current: 36, baseline: 50, baselineCount: 20 },
-    restingHeartRate: { current: 66, baseline: 58, baselineCount: 20 },
+    hrv: { current: 36, history: base.hrv.history },
+    restingHeartRate: { current: 66, history: base.restingHeartRate.history },
     sleep: { hours: 5.1, needHours: 8 },
-    debtHours: 6,
-    temperature: { deviation: 0.8 },
+    temperature: { deviation: 0.8, history: base.temperature.history },
   }));
-  assert.strictEqual(low.band, 'low');
+  assert.strictEqual(low.band, 'low', `got ${low.score}`);
   assert.ok(low.score >= 0, 'the floor is 0, never negative');
 
   const absurd = scores.buildReadiness(neutralReadiness({
-    hrv: { current: 500, baseline: 50, baselineCount: 20 },
-    restingHeartRate: { current: 20, baseline: 58, baselineCount: 20 },
+    hrv: { current: 500, history: base.hrv.history },
+    restingHeartRate: { current: 20, history: base.restingHeartRate.history },
     sleep: { hours: 14, needHours: 8 },
   }));
   assert.ok(absurd.score <= 100, 'the ceiling is 100');
 });
 
 test('a missing input lowers coverage, never the score', () => {
-  const withHrv = scores.buildReadiness(neutralReadiness());
-  const withoutHrv = scores.buildReadiness(neutralReadiness({
-    hrv: { current: null, baseline: null, baselineCount: 0 },
-  }));
+  const base = neutralReadiness();
+  // Make the remaining inputs EXACTLY neutral so the arithmetic is checkable.
+  const flat = (v, n = 28) => Array(n).fill(v);
+  const inputs = neutralReadiness({
+    hrv: { current: 50, history: flat(50) },
+    restingHeartRate: { current: 58, history: flat(58) },
+    sleep: { hours: 6.8, needHours: 8 },
+    temperature: { deviation: 0, history: flat(0) },
+    respiratoryRate: { current: 14, history: flat(14) },
+    yesterdayStrain: { value: 10, history: flat(10) },
+  });
+  const withHrv = scores.buildReadiness(inputs);
+  const withoutHrv = scores.buildReadiness({ ...inputs, hrv: { current: null, history: base.hrv.history } });
   assert.strictEqual(withHrv.score, withoutHrv.score,
     'losing a NEUTRAL signal must not move the number');
+  assert.ok(withoutHrv.coverage < withHrv.coverage, 'but it does lower coverage');
+  assert.strictEqual(withHrv.coverage, 1, 'every input measured is full coverage');
   const c = withoutHrv.contributors.find((x) => x.id === 'hrv');
   assert.strictEqual(c.status, 'unavailable');
   assert.strictEqual(c.points, null, 'unavailable is null, not zero');
@@ -960,6 +1003,76 @@ test('readiness refuses to exist on one core signal', () => {
   });
   assert.strictEqual(r.score, null);
   assert.strictEqual(r.band, 'calibrating');
+});
+
+test('readiness is calibrated: stationary days centre on 50 with a tenth high and a tenth low', () => {
+  // The distributional test the additive model never had. 4,000 mornings of a
+  // person whose physiology does not change, each scored against its own prior
+  // 28 days: the score must read as "ordinary" most of the time and light up on
+  // roughly a tenth of mornings in each direction — not 0 % (a trend detector
+  // wearing a score's clothes) and not 30 % (a fortune cookie).
+  const rnd = lcg(42);
+  const N = 4000;
+  const series = {
+    hrv: hist(rnd, 50, 8, N + 28),
+    rhr: hist(rnd, 58, 2.5, N + 28),
+    sleep: hist(rnd, 7.2, 0.8, N + 28),
+    resp: hist(rnd, 14, 0.7, N + 28),
+    temp: hist(rnd, 0, 0.25, N + 28),
+    strain: hist(rnd, 10, 4, N + 28),
+  };
+  const out = [];
+  for (let i = 28; i < N + 28; i++) {
+    const r = scores.buildReadiness({
+      hrv: { current: Math.max(5, series.hrv[i]), history: series.hrv.slice(i - 28, i) },
+      restingHeartRate: { current: series.rhr[i], history: series.rhr.slice(i - 28, i) },
+      sleep: { hours: series.sleep[i], needHours: 8 },
+      respiratoryRate: { current: series.resp[i], history: series.resp.slice(i - 28, i) },
+      temperature: { deviation: series.temp[i], history: series.temp.slice(i - 28, i) },
+      yesterdayStrain: { value: Math.max(0, series.strain[i]), history: series.strain.slice(i - 28, i) },
+    });
+    out.push(r);
+  }
+  const scoresOnly = out.map((r) => r.score);
+  const m = stats.mean(scoresOnly);
+  const sd = stats.stdev(scoresOnly);
+  const high = out.filter((r) => r.band === 'high').length / N;
+  const low = out.filter((r) => r.band === 'low').length / N;
+  assert.ok(m >= 44 && m <= 56, `mean ${m.toFixed(1)}`);
+  assert.ok(sd >= 8 && sd <= 16, `sd ${sd.toFixed(1)}`);
+  assert.ok(high >= 0.04 && high <= 0.18, `high share ${(high * 100).toFixed(1)}%`);
+  assert.ok(low >= 0.04 && low <= 0.18, `low share ${(low * 100).toFixed(1)}%`);
+});
+
+test('planted effects move readiness the way a body would', () => {
+  const rnd = lcg(9);
+  const history = {
+    hrv: hist(rnd, 50, 8), rhr: hist(rnd, 58, 2.5), resp: hist(rnd, 14, 0.7), temp: hist(rnd, 0, 0.25), strain: hist(rnd, 10, 4),
+  };
+  const morning = (o) => scores.buildReadiness({
+    hrv: { current: 50, history: history.hrv },
+    restingHeartRate: { current: 58, history: history.rhr },
+    sleep: { hours: 6.8, needHours: 8 },
+    respiratoryRate: { current: 14, history: history.resp },
+    temperature: { deviation: 0, history: history.temp },
+    yesterdayStrain: { value: 10, history: history.strain },
+    ...o,
+  }).score;
+  const ordinary = morning({});
+  const alcohol = morning({ hrv: { current: 44, history: history.hrv }, restingHeartRate: { current: 63, history: history.rhr } });
+  assert.ok(ordinary - alcohol >= 8, `an alcohol night (HRV −12 %, RHR +5) costs ≥ 8, cost ${ordinary - alcohol}`);
+  const lateBed = morning({ sleep: { hours: 5.4, needHours: 8 } });
+  assert.ok(ordinary - lateBed >= 5, `a late bedtime costs ≥ 5, cost ${ordinary - lateBed}`);
+  const illness = morning({
+    hrv: { current: 35, history: history.hrv }, restingHeartRate: { current: 66, history: history.rhr },
+    respiratoryRate: { current: 17, history: history.resp }, temperature: { deviation: 0.9, history: history.temp }, sleep: { hours: 4.8, needHours: 8 },
+  });
+  assert.ok(ordinary - illness >= 18, `an illness-shaped night costs ≥ 18, cost ${ordinary - illness}`);
+  const typical = morning({ yesterdayStrain: { value: stats.median(history.strain), history: history.strain } });
+  const easyDay = morning({ yesterdayStrain: { value: 2, history: history.strain } });
+  assert.strictEqual(easyDay, typical, 'an easy day is the absence of a cost, not a credit');
+  const hardDay = morning({ yesterdayStrain: { value: 19, history: history.strain } });
+  assert.ok(hardDay < typical, 'an unusually hard day costs');
 });
 
 test('strain saturates: the top of the scale costs exponentially more', () => {
@@ -1061,9 +1174,9 @@ test('resilience needs coverage and moves by whole levels', () => {
 });
 
 test('the symptom radar fires on joint deviation, never on one signal', () => {
-  const band = { p10: 40, p90: 60, median: 50 };
+  const history = Array.from({ length: 14 }, (_, i) => 50 + (i % 5) - 2); // mean 50, sd ≈ 1.5
   const sig = (id, current, direction = 'high-bad') => ({
-    id, label: id, unit: '', current, band, direction,
+    id, label: id, unit: '', current, history, direction, floor: 1,
   });
   const one = scores.buildSymptomRadar([
     sig('a', 75), sig('b', 50), sig('c', 50), sig('d', 50),
@@ -1077,9 +1190,34 @@ test('the symptom radar fires on joint deviation, never on one signal', () => {
     sig('a', 75), sig('b', 75), sig('c', 30, 'low-bad'), sig('d', 50),
   ]);
   assert.strictEqual(three.level, 'major');
-  assert.ok(three.signals.find((s) => s.id === 'c').flagged, 'low-bad flags below p10');
-  const thin = scores.buildSymptomRadar([sig('a', 75), { id: 'b', label: 'b', unit: '', current: null, band: null }]);
+  assert.ok(three.signals.find((s) => s.id === 'c').flagged, 'low-bad flags a low z');
+  assert.ok(!scores.buildSymptomRadar([sig('a', 30), sig('b', 30), sig('c', 50)]).signals[0].flagged,
+    'a high-bad signal is not flagged for being LOW');
+  const thin = scores.buildSymptomRadar([sig('a', 75), { id: 'b', label: 'b', unit: '', current: null, history: [] }]);
   assert.strictEqual(thin.level, 'unavailable', 'two measurable vitals are not enough to call it');
+});
+
+test('the symptom radar stays quiet on ordinary nights', () => {
+  // With p10–p90 bands, each one-sided signal flagged a tenth of nights by
+  // construction and two-of-four fired on pure noise about one night in twenty.
+  const rnd = lcg(3);
+  const N = 2000;
+  const s1 = hist(rnd, 58, 2.5, N + 28);
+  const s2 = hist(rnd, 14, 0.7, N + 28);
+  const s3 = hist(rnd, 50, 8, N + 28);
+  const s4 = hist(rnd, 0, 0.25, N + 28);
+  let fired = 0;
+  for (let i = 28; i < N + 28; i++) {
+    const r = scores.buildSymptomRadar([
+      { id: 'rhr', label: 'rhr', unit: '', current: s1[i], history: s1.slice(i - 28, i), direction: 'high-bad', floor: 1.5 },
+      { id: 'resp', label: 'resp', unit: '', current: s2[i], history: s2.slice(i - 28, i), direction: 'high-bad', floor: 0.5 },
+      { id: 'hrv', label: 'hrv', unit: '', current: s3[i], history: s3.slice(i - 28, i), direction: 'low-bad', floor: 3 },
+      { id: 'temp', label: 'temp', unit: '', current: s4[i], history: s4.slice(i - 28, i), direction: 'both-bad', floor: 0.15 },
+    ]);
+    if (r.level !== 'none') fired++;
+  }
+  const rate = fired / N;
+  assert.ok(rate < 0.03, `signs of strain on ${(rate * 100).toFixed(1)}% of ordinary nights — should be under 3%`);
 });
 
 test('the energy forecast is bounded, needs a wake time, and debt deepens the dip', () => {
@@ -1097,10 +1235,12 @@ test('the energy forecast is bounded, needs a wake time, and debt deepens the di
 // night — need, debt, consistency, naps
 // ---------------------------------------------------------------------------
 
-test('sleep need is learned from history and debt decays, half-credits and caps', () => {
+test('sleep need is anchored on physiology and debt decays, half-credits and caps', () => {
   const steady = nightlib.buildSleepNeed(Array(28).fill(8));
   assert.strictEqual(steady.baseNeedHours, 8);
+  assert.strictEqual(steady.baseSource, 'default');
   assert.strictEqual(steady.debtHours, 0);
+  assert.strictEqual(steady.tonightNeedHours, 8);
 
   const short = nightlib.buildSleepNeed([...Array(21).fill(8), ...Array(7).fill(5.5)]);
   assert.ok(short.debtHours > 5, `a week of 5.5s owes real hours, got ${short.debtHours}`);
@@ -1112,13 +1252,34 @@ test('sleep need is learned from history and debt decays, half-credits and caps'
   assert.strictEqual(bank.debtHours, 0, 'debt floors at zero — sleep cannot be banked');
 
   const chronic = nightlib.buildSleepNeed(Array(28).fill(3.5));
-  assert.strictEqual(chronic.baseNeedHours, null, 'sub-4h nights are tracking noise, not a need');
+  assert.strictEqual(chronic.nightsUsed, 0, 'sub-4h nights are tracking noise and owe nothing');
+  assert.strictEqual(chronic.debtHours, null);
 
-  const young = nightlib.buildSleepNeed([8, 8, 8]);
-  assert.strictEqual(young.baseNeedHours, null, 'needs a week of nights first');
+  const habit = nightlib.buildSleepNeed(Array(28).fill(6.5));
+  assert.strictEqual(habit.baseNeedHours, 8, 'a habit of 6.5 h is not a need of 6.5 h');
+  assert.ok(habit.debtHours > 5, 'the chronic short sleeper carries debt instead of being congratulated');
+
+  const set = nightlib.buildSleepNeed(Array(28).fill(7.5), { baseNeedHours: 7.5 });
+  assert.strictEqual(set.baseSource, 'setting');
+  assert.strictEqual(set.debtHours, 0);
 
   const strained = nightlib.buildSleepNeed(Array(28).fill(8), { yesterdayStrain: 16 });
-  assert.ok(strained.tonightNeedHours > 8, 'a hard day raises tonight’s need');
+  assert.ok(strained.tonightNeedHours > 8 && strained.tonightNeedHours <= 8.75, 'a hard day raises tonight by up to 45 minutes');
+});
+
+test('last night is scored against the need it was owed, not the debt it created', () => {
+  const r = nightlib.buildSleepNeed([...Array(13).fill(8), 5]);
+  assert.strictEqual(r.lastNightNeedHours, 8, 'a clean history owed last night exactly the base');
+  assert.ok(r.tonightNeedHours > 8, 'and the short night raises tonight');
+});
+
+test('the need↔debt loop cannot chase itself: a 6-hour sleeper settles near 8h30', () => {
+  // Σ0.85^i over 14 nights is 5.08; at the old 25 % repayment the loop gain was
+  // 1.27 and every sub-8 h sleeper was told they needed the cap. At 5 % the
+  // fixed point for a six-hour sleeper is about half an hour above the base.
+  let tonight = 8;
+  for (let i = 0; i < 20; i++) tonight = nightlib.buildSleepNeed(Array(14).fill(6)).tonightNeedHours;
+  assert.ok(tonight >= 8.3 && tonight <= 8.8, `settled at ${tonight}`);
 });
 
 test('consistency survives midnight: 23:40 and 00:20 are forty minutes apart', () => {
@@ -1138,16 +1299,41 @@ test('consistency survives midnight: 23:40 and 00:20 are forty minutes apart', (
   assert.strictEqual(nightlib.buildConsistency([night(23), night(23)], 0).score, null, 'two nights is not a pattern');
 });
 
-test('naps split from the main night and credit debt at half rate', () => {
+test('naps split from the main night, credit debt at half rate, and nothing is dropped', () => {
   const H = 3600000;
   const dayStart = Date.UTC(2026, 5, 2);
-  const main = { start: dayStart - 8 * H, end: dayStart - 0.5 * H };
-  const nap = { start: dayStart + 14 * H, end: dayStart + 15 * H };
-  const long = { start: dayStart + 9 * H, end: dayStart + 13 * H }; // 4h: not a nap
+  const main = { start: dayStart - 8 * H, end: dayStart - 0.5 * H, asleepMs: 7 * H };
+  const nap = { start: dayStart + 14 * H, end: dayStart + 15 * H, asleepMs: H };
+  const long = { start: dayStart + 8 * H, end: dayStart + 12 * H, asleepMs: 3.8 * H }; // 4h daytime sleep
   const split = nightlib.splitSessions([nap, main, long]);
   assert.strictEqual(split.main.start, main.start, 'the longest session is the night');
-  assert.strictEqual(split.naps.length, 1, 'a four-hour daytime sleep is not filed as a nap');
-  assert.strictEqual(split.naps[0].debtCreditHours, 0.5, 'one hour napped repays half an hour');
+  assert.strictEqual(split.naps.length, 2, 'a four-hour daytime sleep is listed, not silently dropped');
+  assert.strictEqual(split.naps.find((n) => n.start === long.start).long, true, 'and flagged as long');
+  assert.strictEqual(split.naps.find((n) => n.start === nap.start).debtCreditHours, 0.5, 'one hour napped repays half an hour');
+});
+
+test('a night the watch split at a bathroom break is one night with an awake gap', () => {
+  const H = 3600000;
+  const dayStart = Date.UTC(2026, 5, 2);
+  const first = { start: dayStart - 8 * H, end: dayStart - 3.7 * H, anchor: dayStart - 3.7 * H, asleepMs: 4.1 * H };
+  const second = { start: dayStart - 3.2 * H, end: dayStart - 0.5 * H, anchor: dayStart - 0.5 * H, asleepMs: 2.6 * H };
+  const { main, naps } = nightlib.splitSessions([second, first]);
+  assert.strictEqual(naps.length, 0);
+  assert.strictEqual(main.sessionCount, 2, 'two records, one night');
+  assert.strictEqual(main.start, first.start);
+  assert.strictEqual(main.end, second.end);
+  assert.ok(Math.abs(main.asleepMs / H - 6.7) < 1e-9, 'asleep time is the sum, the gap is not sleep');
+  assert.strictEqual(Math.round(main.gapMs / 60000), 30, 'the gap is kept as awake-in-bed');
+  const far = { ...second, start: dayStart + 2 * H, end: dayStart + 4 * H, anchor: dayStart + 4 * H };
+  assert.strictEqual(nightlib.splitSessions([first, far]).main.sessionCount, 1, 'two hours apart is not the same night');
+
+  // Two writers reporting the SAME night must not add up to a fourteen-hour sleep.
+  const dupA = { start: dayStart - 8 * H, end: dayStart, anchor: dayStart, asleepMs: 7.5 * H };
+  const dupB = { start: dayStart - 8 * H + 5 * 60000, end: dayStart, anchor: dayStart, asleepMs: 7.4 * H };
+  const dup = nightlib.stitchSessions([dupA, dupB]);
+  assert.strictEqual(dup.length, 1);
+  assert.strictEqual(dup[0].asleepMs, 7.5 * H, 'overlapping records keep the larger, never the sum');
+  assert.strictEqual(dup[0].sessionCount, 1);
 });
 
 test('the overnight dip needs real samples on both sides', () => {
@@ -1347,21 +1533,45 @@ test('highlights cap at three and only fire on a window extreme', () => {
   assert.strictEqual(thin.length, 0, 'under 21 days there is no window to be extreme in');
 });
 
-test('correlation cards demand n and r, and report the split in real units', () => {
+test('correlation cards demand n, survive FDR control, and report the split in real units', () => {
   const xs = [];
   const ys = [];
   for (let i = 0; i < 40; i++) { xs.push(6 + (i % 5)); ys.push(40 + (i % 5) * 3); }
   const card = trends.buildCorrelation({ id: 't', xLabel: 'x', yLabel: 'y', unit: 'ms', xs, ys });
-  assert.ok(card, 'a strong association over 40 days yields a card');
+  assert.ok(card, 'a strong association over 40 days yields a candidate');
   assert.ok(card.delta > 0, 'above-median days show the higher mean');
-  assert.strictEqual(trends.buildCorrelation({ id: 't', xLabel: 'x', yLabel: 'y', unit: '', xs: xs.slice(0, 10), ys: ys.slice(0, 10) }), null,
-    'thirteen days of data is an anecdote');
+  assert.ok(card.p < 0.001, 'with a real p-value');
+  assert.strictEqual(trends.buildCorrelation({ id: 't', xLabel: 'x', yLabel: 'y', unit: '', xs: xs.slice(0, 20), ys: ys.slice(0, 20) }), null,
+    'twenty days of data is an anecdote');
   const noise = trends.buildCorrelation({
-    id: 't', xLabel: 'x', yLabel: 'y', unit: '',
+    id: 't', xLabel: 'x', yLabel: 'y', unit: 'ms',
     xs: Array.from({ length: 40 }, (_, i) => (i * 7919) % 13),
     ys: Array.from({ length: 40 }, (_, i) => ((i + 5) * 104729) % 17),
   });
-  assert.strictEqual(noise, null, 'weak correlations stay unreported');
+  const kept = trends.selectCorrelations([card, noise]);
+  assert.strictEqual(kept.length, 1, 'the family keeps the finding and drops the noise');
+  assert.strictEqual(kept[0].id, 't');
+  assert.ok(kept[0].q <= 0.1 && kept[0].strength === 'strong');
+});
+
+test('correlation cards on pure noise are rare', () => {
+  // Four candidate pairs a month, 45 days each, no real association: with the old
+  // rule (n ≥ 14, |r| ≥ 0.3, no correction) a card appeared more months than not.
+  const rnd = lcg(11);
+  let months = 0;
+  let withCard = 0;
+  for (let m = 0; m < 300; m++) {
+    const cands = [];
+    for (let k = 0; k < 4; k++) {
+      const xs = hist(rnd, 0, 1, 45);
+      const ys = hist(rnd, 0, 1, 45);
+      cands.push(trends.buildCorrelation({ id: `p${k}`, xLabel: 'x', yLabel: 'y', unit: '', xs, ys }));
+    }
+    months++;
+    if (trends.selectCorrelations(cands).length) withCard++;
+  }
+  const rate = withCard / months;
+  assert.ok(rate < 0.2, `a card on ${(rate * 100).toFixed(0)}% of noise months — should be well under 20%`);
 });
 
 test('the weekly report balance names restoring, optimal and overreaching', () => {
@@ -1396,10 +1606,10 @@ test('goals adapt down on a low-readiness morning, with the reason attached', ()
   });
   assert.strictEqual(normal.steps.reason, null);
   const low = goals.buildAdaptiveGoals({
-    stepsMedian: 9000, activeCalMedian: 520, readinessScore: 38, tonightNeedHours: 8.2,
+    stepsMedian: 9000, activeCalMedian: 520, readinessScore: 30, tonightNeedHours: 8.2,
   });
   assert.ok(low.steps.goal < normal.steps.goal);
-  assert.ok(low.steps.reason.includes('38'), 'the goal explains itself');
+  assert.ok(low.steps.reason.includes('30'), 'the goal explains itself');
   assert.strictEqual(low.recover.goal, 8.2, 'the recover goal is tonight’s need');
   const empty = goals.buildAdaptiveGoals({ stepsMedian: null, activeCalMedian: null, readinessScore: null, tonightNeedHours: null });
   assert.strictEqual(empty.steps.goal, 10000, 'no history falls back to the stated default');
