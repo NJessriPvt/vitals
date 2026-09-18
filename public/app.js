@@ -1406,8 +1406,12 @@ async function boot() {
     tab.tabIndex = tab.dataset.view === state.view ? 0 : -1;
   }
   renderDayBar();
-  await refreshStatus();
-  await load();
+  // In parallel, not in sequence. These are two independent reads of the same
+  // database and the screen does not need the status strip to draw, but `await
+  // refreshStatus()` first made every cold open cost status PLUS the screen —
+  // measured at 3.3s + 6.0s before the query work below, and the screen, which is
+  // the thing being waited for, could not even start until the strip came back.
+  await Promise.all([refreshStatus(), load()]);
   setInterval(refreshStatus, 30000);
 }
 

@@ -61,7 +61,7 @@ const asyncTests = [];
 function testAsync(name, fn) { asyncTests.push([name, fn]); }
 
 // Async tests that need a live database; skipped when none is reachable.
-const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period", "overview reports sleep in hours, not scaled twice", "zone bands come from 220 - age and cover the range", "an unsynced age reports itself as an assumption", "setProfile cannot write age, only the max HR override", "a failed profile read leaves the last known age and does not fail the sweep", "activity calories use the database interval rows", "fitness age integrates recent database trends", "strength log validates, stores and deletes entries", "an unmeasured five minutes is a heart-rate gap, never a zero", "the personal heart-rate band stays null until there is history", "screen payloads survive an empty database", "daily load prefers device zone minutes and marks rest days zero"]);
+const DB_BACKED = new Set(["restated points upsert instead of doubling the total", "day buckets follow the viewer offset, not UTC", "stacked parts are replaced wholesale on restatement", "avg never sums: a bucketed heart rate stays a rate", "last takes the newest reading in the bucket", "a partial token write never nulls the fields it did not pass", "a second replica does not simply take its turn", "two bedtimes either side of midnight land on different days", "sparse metrics keep their real spacing on the time axis", "denseBuckets never invents a bucket outside the range", "out-of-range zone time is stored but kept out of the stack", "the delta compares against the previous equal-length period", "overview reports sleep in hours, not scaled twice", "zone bands come from 220 - age and cover the range", "an unsynced age reports itself as an assumption", "setProfile cannot write age, only the max HR override", "a failed profile read leaves the last known age and does not fail the sweep", "activity calories use the database interval rows", "fitness age integrates recent database trends", "strength log validates, stores and deletes entries", "an unmeasured five minutes is a heart-rate gap, never a zero", "the personal heart-rate band stays null until there is history", "screen payloads survive an empty database", "daily load prefers device zone minutes and marks rest days zero", "the heart-rate rollup agrees with the samples it projects", "a write expires the windows it touched and spares the ones it did not"]);
 
 // ---------------------------------------------------------------------------
 // catalog — the filter field is per record type and a wrong one is a 400
@@ -1637,6 +1637,105 @@ test('badges earn from lifetime totals and show progress to the next rung', () =
 // ---------------------------------------------------------------------------
 // storage-backed: strength log, empty-database resilience, load sourcing
 // ---------------------------------------------------------------------------
+
+/**
+ * The per-minute heart-rate rollup is a PROJECTION of `points`, and every screen
+ * figure now reads it instead of the raw samples. If it ever disagreed with the
+ * samples it was built from, every heart-rate number on every screen would be
+ * quietly wrong with nothing to notice — so this asserts the equivalence directly,
+ * including after a restatement rewrites a minute's values.
+ */
+testAsync('the heart-rate rollup agrees with the samples it projects', async () => {
+  await db.clearAll();
+  const day = Date.UTC(2031, 6, 3);
+  const rows = [];
+  // Two full minutes at a 10-second cadence, with different values per sample.
+  for (let m = 0; m < 2; m++) {
+    for (let i = 0; i < 6; i++) {
+      rows.push({
+        dataType: 'heart-rate', pointId: `hr/${m}/${i}`,
+        startMs: day + m * 60000 + i * 10000, endMs: day + m * 60000 + i * 10000 + 1000,
+        value: 50 + m * 20 + i, raw: {},
+      });
+    }
+  }
+  await db.putPoints(rows);
+
+  const expected = (from, to) => {
+    const inWindow = rows.filter((r) => r.startMs >= from && r.startMs < to);
+    return {
+      v: inWindow.reduce((a, r) => a + r.value, 0) / inWindow.length,
+      lo: Math.min(...inWindow.map((r) => r.value)),
+      hi: Math.max(...inWindow.map((r) => r.value)),
+      n: inWindow.length,
+    };
+  };
+
+  // A two-minute bucket must be the mean of the SAMPLES, not the mean of the two
+  // per-minute means — identical here only because both minutes are equally dense,
+  // so the trace below is checked against real min/max as well.
+  const [bucket] = await db.series('heart-rate', day, day + 120000, 120000, 'avg', 0);
+  const want = expected(day, day + 120000);
+  assert.strictEqual(bucket.v, want.v);
+  assert.strictEqual(bucket.lo, want.lo);
+  assert.strictEqual(bucket.hi, want.hi);
+  assert.strictEqual(bucket.n, want.n, 'n counts samples, not minutes');
+
+  const trace = await db.heartRateTrace(day, day + 120000, 2);
+  assert.strictEqual(trace.points.length, 2);
+  assert.strictEqual(trace.points[0].lo, 50, 'min is the lowest SAMPLE, not the lowest minute mean');
+  assert.strictEqual(trace.points[1].hi, 75);
+
+  // Restatement: Google rewrites one sample. The rollup must follow, not keep the
+  // old mean — the whole point of rebuilding touched minutes from `points`.
+  await db.putPoints([{
+    dataType: 'heart-rate', pointId: 'hr/0/0',
+    startMs: day, endMs: day + 1000, value: 200, raw: {},
+  }]);
+  const [restated] = await db.series('heart-rate', day, day + 60000, 60000, 'avg', 0);
+  assert.strictEqual(restated.v, (200 + 51 + 52 + 53 + 54 + 55) / 6);
+  assert.strictEqual(restated.hi, 200);
+});
+
+/**
+ * Read memos are pruned by RANGE, and getting that wrong is invisible until a chart
+ * is a day stale. Both directions matter: a window the write reached into must
+ * reload (a manual sync has to show its own points), and one it did not reach must
+ * survive — otherwise the five-minute tail sync empties the cache every time and
+ * the cold path is the normal path, which is the cost this whole memo exists to
+ * avoid.
+ */
+testAsync('a write expires the windows it touched and spares the ones it did not', async () => {
+  await db.clearAll();
+  const old = Date.UTC(2031, 6, 10);
+  const recent = Date.UTC(2031, 6, 20);
+  await db.putPoints([
+    { dataType: 'steps', pointId: 's/old', startMs: old, endMs: old + 60000, value: 100, raw: {} },
+    { dataType: 'steps', pointId: 's/recent', startMs: recent, endMs: recent + 60000, value: 100, raw: {} },
+  ]);
+
+  // Warm both: one window that ends before the coming write, one that spans it.
+  const oldWindow = await db.series('steps', old, old + 86400000, 86400000, 'sum', 0);
+  const wideWindow = await db.series('steps', old, recent + 86400000, 86400000, 'sum', 0);
+  assert.strictEqual(oldWindow[0].v, 100);
+  assert.strictEqual(wideWindow.length, 2);
+
+  // Write into the RECENT day only, the way a tail sync does.
+  await db.putPoints([
+    { dataType: 'steps', pointId: 's/recent', startMs: recent, endMs: recent + 60000, value: 900, raw: {} },
+  ]);
+
+  // The spanning window must reload and show the restated value...
+  const wideAfter = await db.series('steps', old, recent + 86400000, 86400000, 'sum', 0);
+  assert.strictEqual(wideAfter[1].v, 900, 'a sync must show its own points immediately');
+
+  // ...and the untouched older window must still be a memo hit. Proven by making
+  // the underlying table disagree with it: a value written straight past putPoints
+  // is invisible to a cached read and would surface the moment the entry were dropped.
+  await db.handle().query('UPDATE points SET value = 777 WHERE point_id = ?', ['s/old']);
+  const oldAfter = await db.series('steps', old, old + 86400000, 86400000, 'sum', 0);
+  assert.strictEqual(oldAfter[0].v, 100, 'a window the write could not reach stays cached');
+});
 
 testAsync('strength log validates, stores and deletes entries', async () => {
   await assert.rejects(() => db.strengthAdd({ exercise: '', sets: 3, reps: 10, weightKg: 60 }));

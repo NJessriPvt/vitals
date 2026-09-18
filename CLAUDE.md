@@ -111,13 +111,45 @@ Int64 values arrive as JSON **strings** (`"count": "15"`).
 - **No root-absolute URLs in `public/`.** Deployed, the app sits under a stripped path
   prefix, so `/style.css` works locally and 404s in the fleet. `npm run check:paths`
   gates it and runs in the Docker build.
+- **Heart rate is read through `hr_minute`, never through the raw samples.** The
+  2-second PPG stream is 1.2M rows and 800 MB after five weeks and grows ~34k rows
+  a day; `hr_minute` is a per-minute rollup (sum/n/min/max) that `putPoints`
+  rebuilds for exactly the minutes a write touched, straight from `points` — so
+  restatement, `renormalize` and a demo load all repair it and it can never drift.
+  It is a projection: `points` stays authoritative and nothing reads it as a
+  source. Sleeping HR, the reference band, the intraday trace and every
+  minute-aligned HR series come off it, VALUE-FOR-VALUE identical (2875→35ms,
+  2730→18ms, 3088→42ms measured) because each was already averaging up to whole
+  minutes. A bucket is `SUM(sum_v)/SUM(n)` — the mean of the SAMPLES; averaging
+  per-minute means would weight a sparse minute like a full one. Two things it
+  cannot serve: sub-minute or minute-misaligned buckets (`hrRollupUsable` gates
+  this), and **zone time**, which is decided per sample and would smear across
+  zone boundaries at minute resolution — that one stays on the raw stream.
+- **The optimiser picks the wrong index on `points`, so the hot scans say
+  `FORCE INDEX`.** `raw` is LONGTEXT stored inline, which makes the clustered index
+  800 MB against ~15 MB of covering index, and MySQL's cost model does not charge
+  for the pages it drags through a 128 MB buffer pool — so it costs the clustered
+  scan as *cheaper* and takes it (zone time: 7538ms its way, 5336ms forced,
+  identical rows). Don't remove those hints without re-measuring.
+- **Count nothing you only test for zero.** `COUNT(*) GROUP BY data_type` cannot be
+  answered without walking all 1.2M index entries (440ms, and it was on every
+  screen); `db.typeRange()` asks each type for MIN/MAX only, 28 index dives, 10ms.
+  `first_ms === null` IS `points === 0` because `anchor_ms` is NOT NULL. Use
+  `db.typeStats()` only where a count is actually REPORTED (`/api/status`,
+  the assistant digest) and `db.typeCount(type)` for one small type.
 - **Screen reads are memoized per replica** (`db.memoized`): zone derivation,
   reference bands, bucketed series, typeStats/platforms. Timestamps in memo keys
   quantize to the minute (request windows end at `Date.now()`, which would
-  otherwise mint a fresh key per request); `putPoints` invalidates reads/stats so
-  a manual sync shows its points immediately. Never bypass `series`/`aggregate`
-  with hand-written point queries in a screen path — the covering index
-  `(data_type, anchor_ms, value)` plus this memo is why screens are fast.
+  otherwise mint a fresh key per request). `putPoints` prunes them **by range**
+  (`memoInvalidateSince`): every entry records the `toMs` it covers, and a write
+  drops only entries whose window reaches at or past the oldest anchor it touched
+  — measured over the incoming rows AND the pre-write anchors of the ids being
+  overwritten, so a restatement that moves a point also expires the day it left.
+  A manual sync still shows its own points immediately; what changed is that the
+  36-hour tail no longer empties the whole cache every five minutes, which had made
+  the cold path the normal path. Never bypass `series`/`aggregate` with
+  hand-written point queries in a screen path — the covering index
+  `(data_type, anchor_ms, value)`, `hr_minute` and this memo are why screens are fast.
 - **`agg` is a property of the measurement, not a UI preference.** Summing a heart
   rate produces a meaningless number. Don't make it configurable.
 

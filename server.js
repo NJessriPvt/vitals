@@ -20,6 +20,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 // Load .env before anything else is required — several lib modules read
 // process.env at module load time, so a loader that runs after them silently
@@ -113,6 +114,39 @@ async function readJson(req) {
   }
 }
 
+/**
+ * Static assets, read once and held in memory with an ETag and a gzip copy.
+ *
+ * Four files totalling 150 KB are the whole client, and they were being re-read
+ * from disk, sent uncompressed and — the expensive part — sent IN FULL on every
+ * load: `cache-control: no-cache` asks the browser to revalidate, but with no
+ * validator on the response there is nothing to revalidate WITH, so every
+ * conditional request had to be answered with the whole body. An ETag turns that
+ * into a 304 of a few bytes, and gzip takes the first load from 150 KB to ~35 KB.
+ *
+ * Still `no-cache`, deliberately: a phone that held yesterday's app.js kept
+ * showing yesterday's UI, including a sign-in banner that outlived the sign-in.
+ * Revalidate every load — just cheaply.
+ */
+const assetCache = new Map();
+
+function loadAsset(file) {
+  const hit = assetCache.get(file);
+  const stat = fs.statSync(file);
+  if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit;
+  const body = fs.readFileSync(file);
+  const asset = {
+    body,
+    gzip: zlib.gzipSync(body, { level: zlib.constants.Z_BEST_COMPRESSION }),
+    etag: `"${crypto.createHash('sha1').update(body).digest('base64url')}"`,
+    type: MIME[path.extname(file)] || 'application/octet-stream',
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+  };
+  assetCache.set(file, asset);
+  return asset;
+}
+
 function serveStatic(req, res, pathname) {
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
   const file = path.join(PUBLIC, rel);
@@ -120,19 +154,32 @@ function serveStatic(req, res, pathname) {
   // classic traversal, and this app holds health data. The separator matters: a
   // bare prefix check would also admit a sibling like `public-secrets/`.
   if (file !== PUBLIC && !file.startsWith(PUBLIC + path.sep)) { res.writeHead(403).end(); return; }
-  fs.readFile(file, (err, buf) => {
-    if (err) { res.writeHead(404, { 'content-type': 'text/plain' }).end('not found'); return; }
-    res.writeHead(200, {
-      // no-cache (NOT no-store): revalidate every load. Without any header the
-      // browser caches these heuristically, and a phone that held yesterday's
-      // app.js kept showing yesterday's UI — a sign-in banner that outlived the
-      // sign-in. These five files are small; a conditional fetch is cheap.
-      'cache-control': 'no-cache',
-      'content-type': MIME[path.extname(file)] || 'application/octet-stream',
-      'cache-control': 'no-cache',
-    });
-    res.end(buf);
-  });
+
+  let asset;
+  try { asset = loadAsset(file); } catch {
+    res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
+    return;
+  }
+
+  if (req.headers['if-none-match'] === asset.etag) {
+    res.writeHead(304, { etag: asset.etag, 'cache-control': 'no-cache' }).end();
+    return;
+  }
+
+  // Compression is negotiated, never assumed: the fleet's edge proxy and a plain
+  // curl both reach this directly.
+  const wantsGzip = /\bgzip\b/.test(req.headers['accept-encoding'] || '');
+  const body = wantsGzip ? asset.gzip : asset.body;
+  const headers = {
+    'cache-control': 'no-cache',
+    'content-type': asset.type,
+    'content-length': body.length,
+    etag: asset.etag,
+    vary: 'accept-encoding',
+  };
+  if (wantsGzip) headers['content-encoding'] = 'gzip';
+  res.writeHead(200, headers);
+  res.end(req.method === 'HEAD' ? undefined : body);
 }
 
 // ---------------------------------------------------------------------------
