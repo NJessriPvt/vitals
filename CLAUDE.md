@@ -81,8 +81,21 @@ because it means the *member* was right and only the format was wrong.
 | sedentary-period | *(none)* | interval only; its duration is the measurement |
 | sleep | `stages[]`, `type` | not `sleepStages`/`sleepType` as the doc example shows |
 | respiratory-rate-sleep-summary | `fullSleepStats.breathsPerMinute` | nested per sleep stage — needs a dotted path, or a bare key search returns deep-sleep |
+| daily-heart-rate-variability | `averageHeartRateVariabilityMilliseconds` | also `deepSleepRootMeanSquareOfSuccessiveDifferencesMilliseconds`, `entropy` |
+| daily-sleep-temperature-derivations | `nightlyTemperatureCelsius` − `baselineTemperatureCelsius` | NO delta field — both are absolute (~33 °C); the plotted deviation is computed |
+| daily-oxygen-saturation | `averagePercentage` | plus lower/upper bound, SD |
 
 Int64 values arrive as JSON **strings** (`"count": "15"`).
+
+**Daily types date with an OBJECT**, `date: {year, month, day}` — not the
+`"2026-09-18"` string the demo writes. Until Sep 2026 `toMs` only parsed strings and
+every daily summary was dropped as "no timestamp found"; that was mistaken for "the
+device doesn't report daily resting HR/HRV/SpO2". It does (a Fitbit Air, since at
+least Aug 14).
+
+**Empty point ids.** `respiratory-rate-sleep-summary` names every point
+`.../dataPoints/` — nothing after the slash. A name ending in `/` is treated as
+nameless (time key), or every night upserts onto one row.
 
 ## Invariants — don't quietly break these
 

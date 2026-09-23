@@ -206,6 +206,77 @@ test('a civil date anchors identically on any host timezone', () => {
     'the id must not vary with the host timezone');
 });
 
+test('a daily point dated with a civil-date OBJECT is kept, anchored at UTC midnight', () => {
+  // Regression: the live API sends `date` as {year, month, day}, not the string the
+  // demo writes. toMs() only parsed strings, so every daily summary — resting HR,
+  // HRV, SpO2, breathing, skin temp, VO2max — was dropped as "no timestamp found"
+  // and the screens silently fell back to raw-sample derivations. Payload verbatim
+  // from users/me/dataTypes/daily-resting-heart-rate/dataPoints, Sep 2026.
+  const notes = new Set();
+  const row = normalize.normalizePoint({
+    dataSource: { recordingMethod: 'DERIVED', device: { displayName: 'Google Fitbit Air' }, platform: 'FITBIT' },
+    dailyRestingHeartRate: {
+      date: { year: 2026, month: 9, day: 18 },
+      beatsPerMinute: '57',
+      dailyRestingHeartRateMetadata: { calculationMethod: 'WITH_SLEEP' },
+    },
+  }, catalog.get('daily-resting-heart-rate'), notes);
+  assert.ok(row, `the point must not be dropped (${[...notes].join('; ')})`);
+  assert.strictEqual(row.value, 57);
+  assert.strictEqual(row.startMs, Date.UTC(2026, 8, 18));
+  assert.strictEqual(row.endMs, Date.UTC(2026, 8, 19));
+});
+
+test('skin temp is the nightly DEVIATION from baseline, not the absolute reading', () => {
+  // The live payload carries no delta field — only the night's absolute skin
+  // temperature and the device's baseline. Charted raw it plots ~33.3 °C on a card
+  // (and a symptom-radar signal) that reads it as a deviation around zero.
+  const notes = new Set();
+  const row = normalize.normalizePoint({
+    dailySleepTemperatureDerivations: {
+      date: { year: 2026, month: 9, day: 23 },
+      nightlyTemperatureCelsius: 33.34754385964918,
+      baselineTemperatureCelsius: 33.7794871794872,
+      relativeNightlyStddev30dCelsius: 0.5130709994946606,
+    },
+  }, catalog.get('daily-sleep-temperature-derivations'), notes);
+  assert.ok(Math.abs(row.value - (33.34754385964918 - 33.7794871794872)) < 1e-9);
+  assert.strictEqual(notes.size, 0, [...notes].join('; '));
+});
+
+test('daily HRV reads the field the live API actually sends', () => {
+  const notes = new Set();
+  const row = normalize.normalizePoint({
+    dailyHeartRateVariability: {
+      date: { year: 2026, month: 9, day: 23 },
+      averageHeartRateVariabilityMilliseconds: 77.1,
+      nonRemHeartRateBeatsPerMinute: '53',
+      deepSleepRootMeanSquareOfSuccessiveDifferencesMilliseconds: 80.95,
+    },
+  }, catalog.get('daily-heart-rate-variability'), notes);
+  assert.strictEqual(row.value, 77.1);
+  assert.strictEqual(notes.size, 0, [...notes].join('; '));
+});
+
+test('a point whose resource name has an EMPTY id gets a time key, not a shared one', () => {
+  // Regression: respiratory-rate-sleep-summary names every point
+  // ".../dataPoints/" with nothing after the slash. Used as the id, every night
+  // upserted onto ONE row, so the chart showed a single stale value forever.
+  const notes = new Set();
+  const night = (iso) => normalize.normalizePoint({
+    name: 'users/5680734231359142911/dataTypes/respiratory-rate-sleep-summary/dataPoints/',
+    respiratoryRateSleepSummary: {
+      sampleTime: { physicalTime: iso },
+      deepSleepStats: { breathsPerMinute: 14.2 },
+      fullSleepStats: { breathsPerMinute: 13.6 },
+    },
+  }, catalog.get('respiratory-rate-sleep-summary'), notes);
+  const a = night('2026-09-20T08:53:00Z');
+  const b = night('2026-09-21T08:10:00Z');
+  assert.notStrictEqual(a.pointId, b.pointId, 'two nights must be two rows');
+  assert.strictEqual(a.value, 13.6);
+});
+
 test('sleep: value is time ASLEEP, stages become parts, awake is excluded', () => {
   const notes = new Set();
   const row = normalize.normalizePoint({
