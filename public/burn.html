@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e14">
+<title>Burn — vitals</title>
+<!-- Live workout burn toward a calorie goal. Relative URLs only (served under a
+     stripped path prefix in the fleet). Reads the same minute series as the
+     dashboard; nothing here calls Google. -->
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;500;600&display=swap">
+<link rel="stylesheet" href="./style.css">
+<style>
+  .burn { max-width: 760px; margin: 0 auto; padding: 12px var(--pad) 48px; position: relative; z-index: 1; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: var(--pad); margin-top: 12px; }
+  .card h2 { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-2); margin: 0 0 10px; }
+  .hero { display: grid; grid-template-columns: 150px 1fr; gap: 14px; align-items: center; }
+  .ring text { font-family: var(--font-num); }
+  .big { font-family: var(--font-num); font-size: 34px; font-weight: 500; line-height: 1; }
+  .sub { color: var(--text-2); font-size: 13px; margin-top: 4px; }
+  .tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .tile { background: var(--surface-2); border-radius: 12px; padding: 10px; }
+  .tile .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .tile .v { font-family: var(--font-num); font-size: 22px; margin-top: 2px; }
+  .tile .v small { font-size: 12px; color: var(--text-2); font-family: inherit; }
+  .tile .n { font-size: 11px; color: var(--text-2); margin-top: 2px; }
+  @media (min-width: 560px) { .tiles { grid-template-columns: repeat(4, 1fr); } }
+  .ctl { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+  .ctl label { font-size: 11px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+  .ctl input, .ctl select { background: var(--surface-2); color: var(--text); border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 8px; font: inherit; font-size: 14px; }
+  .ctl input[type=number] { width: 90px; }
+  svg.chart { width: 100%; height: auto; display: block; }
+  svg.chart text { fill: var(--muted); font-size: 10px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--text-2); margin-top: 6px; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .zrow { display: grid; grid-template-columns: 92px 1fr 64px; gap: 8px; align-items: center; margin: 5px 0; font-size: 12px; }
+  .ztrack { height: 10px; background: var(--surface-3); border-radius: 5px; overflow: hidden; }
+  .zfill { height: 100%; border-radius: 5px; }
+  .zrow .zv { text-align: right; font-variant-numeric: tabular-nums; }
+  .zrow .zb { color: var(--muted); font-size: 10px; display: block; }
+  table.ph { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.ph td, table.ph th { padding: 6px 4px; border-bottom: 1px solid var(--grid); text-align: right; font-variant-numeric: tabular-nums; }
+  table.ph th { color: var(--muted); font-weight: 500; font-size: 11px; }
+  table.ph td:first-child, table.ph th:first-child { text-align: left; }
+  .note { font-size: 11px; color: var(--muted); line-height: 1.5; margin-top: 8px; }
+  .fresh { font-size: 12px; color: var(--text-2); }
+  .fresh.stale { color: var(--warn); }
+  .err { color: var(--bad); font-size: 13px; }
+  .insights li { margin: 6px 0; font-size: 14px; line-height: 1.45; }
+</style>
+</head>
+<body>
+<div class="aurora" aria-hidden="true"></div>
+<header class="top">
+  <div class="brand"><span class="mark" aria-hidden="true"></span> burn</div>
+  <div class="top-right">
+    <span id="fresh" class="fresh">loading…</span>
+    <button id="btn-sync" class="btn btn-accent" type="button">Sync</button>
+  </div>
+</header>
+
+<main class="burn">
+  <div id="err" class="err" hidden></div>
+
+  <section class="card">
+    <div class="hero">
+      <svg class="ring" id="ring" viewBox="0 0 150 150" aria-label="progress to goal"></svg>
+      <div>
+        <div class="big" id="burned">—</div>
+        <div class="sub" id="burned-sub">kcal burned this session</div>
+        <div class="sub" id="eta"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="tiles" id="tiles"></div>
+  </section>
+
+  <section class="card">
+    <h2>What the numbers say</h2>
+    <ul class="insights" id="insights"></ul>
+  </section>
+
+  <section class="card">
+    <h2>Burn so far vs goal</h2>
+    <svg class="chart" id="c-cum" viewBox="0 0 700 220"></svg>
+    <div class="legend">
+      <span><i style="background:var(--series-1)"></i>burned</span>
+      <span><i style="background:var(--text-2)"></i>projection at current pace</span>
+      <span><i style="background:var(--warn)"></i>goal</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Heart rate</h2>
+    <svg class="chart" id="c-hr" viewBox="0 0 700 220"></svg>
+    <div class="legend" id="hr-legend"></div>
+  </section>
+
+  <section class="card">
+    <h2>Burn pace (kcal / min, 5-min blocks)</h2>
+    <svg class="chart" id="c-pace" viewBox="0 0 700 180"></svg>
+    <div class="legend">
+      <span><i style="background:var(--series-3)"></i>strength / other</span>
+      <span><i style="background:var(--series-5)"></i>walk</span>
+      <span><i style="background:var(--series-2)"></i>run</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Time in heart-rate zones</h2>
+    <div id="zones"></div>
+  </section>
+
+  <section class="card">
+    <h2>Phases</h2>
+    <table class="ph" id="phases"></table>
+    <div class="note">Phase per minute from steps: 130+ steps/min = run, 70–129 = walk, less = strength / other.</div>
+  </section>
+
+  <section class="card">
+    <h2>Settings</h2>
+    <div class="ctl">
+      <label>Session start <input type="time" id="in-start"></label>
+      <label>Goal (kcal) <input type="number" id="in-goal" min="100" max="10000" step="50"></label>
+      <label>Finish by <input type="time" id="in-end"></label>
+      <label>Count
+        <select id="in-basis">
+          <option value="gross">all burn (active + resting)</option>
+          <option value="active">active only</option>
+        </select>
+      </label>
+    </div>
+    <div class="note" id="method"></div>
+  </section>
+</main>
+
+<script>
+'use strict';
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const MIN = 60000;
+  const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const ORD = [1, 2, 3, 4, 5, 6].map((i) => css('--ord-' + i));
+  const PHASE = { strength: css('--series-3'), walk: css('--series-5'), run: css('--series-2') };
+  const PHASE_NAME = { strength: 'Strength / other', walk: 'Walk', run: 'Run' };
+
+  // ---- settings: URL params win, then today's stored values, then defaults ----
+  const todayKey = () => new Date().toLocaleDateString('en-CA');
+  const params = new URLSearchParams(location.search);
+  const stored = JSON.parse(localStorage.getItem('burn.settings') || '{}');
+  const fresh = stored.date === todayKey() ? stored : {};
+  const nowHM = () => { const d = new Date(Date.now() - (Date.now() % (5 * MIN))); return d.toTimeString().slice(0, 5); };
+  const S = {
+    start: params.get('start') || fresh.start || nowHM(),
+    goal: Number(params.get('goal') || fresh.goal || stored.goal || 2000),
+    end: params.get('end') || fresh.end || '',
+    basis: params.get('basis') || fresh.basis || stored.basis || 'gross',
+  };
+  if (!S.end) { const [h, m] = S.start.split(':').map(Number); S.end = String((h + 3) % 24).padStart(2, '0') + ':' + String(m).padStart(2, '0'); }
+  const save = () => localStorage.setItem('burn.settings', JSON.stringify({ ...S, date: todayKey() }));
+  save();
+  $('in-start').value = S.start; $('in-goal').value = S.goal; $('in-end').value = S.end; $('in-basis').value = S.basis;
+  for (const id of ['in-start', 'in-goal', 'in-end', 'in-basis']) {
+    $(id).addEventListener('change', () => {
+      S.start = $('in-start').value || S.start; S.goal = Number($('in-goal').value) || S.goal;
+      S.end = $('in-end').value || S.end; S.basis = $('in-basis').value;
+      save(); render();
+    });
+  }
+  const atToday = (hm) => { const [h, m] = hm.split(':').map(Number); const d = new Date(); d.setHours(h, m, 0, 0); return d.getTime(); };
+  const clock = (ms) => new Date(ms).toTimeString().slice(0, 5);
+  const dur = (min) => { min = Math.round(min); return min >= 60 ? Math.floor(min / 60) + ' h ' + String(min % 60).padStart(2, '0') + ' min' : min + ' min'; };
+  const r0 = (x) => Math.round(x).toLocaleString('en');
+
+  // ---- data --------------------------------------------------------------
+  let data = null;
+  async function get(p, opts) {
+    const r = await fetch(p, { credentials: 'same-origin', ...opts });
+    if (!r.ok) throw new Error(p.split('?')[0] + ' → ' + r.status);
+    return r.json();
+  }
+  async function load() {
+    const from = atToday('00:00'), to = Date.now();
+    const [series, settings, assistant, status] = await Promise.all([
+      get('./api/series?bucket=minute&type=heart-rate,active-energy-burned,steps&from=' + from + '&to=' + to + '&tz=' + (-new Date().getTimezoneOffset() * 60000)),
+      get('./api/settings'),
+      get('./api/assistant'),
+      get('./api/status').catch(() => ({})),
+    ]);
+    const by = Object.fromEntries(series.series.map((s) => [s.type, new Map(s.points.filter((p) => p.v != null).map((p) => [p.t, p]))]));
+    data = { by, settings, assistant, status, loadedAt: Date.now() };
+    $('err').hidden = true;
+    render();
+  }
+
+  // ---- model ---------------------------------------------------------------
+  function model() {
+    const { by, settings, assistant } = data;
+    const hr = by['heart-rate'], act = by['active-energy-burned'], steps = by['steps'];
+    const maxHr = settings.maxHeartRate;
+    const thr = settings.zones.map((z) => z.fromBpm); // zone i starts at thr[i]
+    const zoneOf = (bpm) => { let z = 0; for (let i = 0; i < thr.length; i++) if (bpm >= thr[i]) z = i; return z; };
+
+    // Resting burn per minute: today's total minus active, over the minutes the
+    // total covers. Clamped to a human range; a fresh day falls back to 1.4.
+    const t = assistant.today || {};
+    const minsToday = (Date.now() - atToday('00:00')) / MIN;
+    let rest = (t.totalCalories != null && t.activeCalories != null && minsToday > 240)
+      ? (t.totalCalories - t.activeCalories) / minsToday : 1.4;
+    if (!(rest > 0.8 && rest < 2.4)) rest = 1.4;
+    const restRate = S.basis === 'gross' ? rest : 0;
+
+    const start = atToday(S.start);
+    const lastT = Math.max(...[...hr.keys(), ...act.keys()].filter((k) => k >= start), start - MIN);
+    const mins = [];
+    for (let m = start; m <= lastT; m += MIN) {
+      const h = hr.get(m), a = act.get(m), s = steps.get(m);
+      const spm = s ? s.v : 0;
+      const phase = spm >= 130 ? 'run' : spm >= 70 ? 'walk' : 'strength';
+      mins.push({ t: m, hr: h ? h.v : null, hrHi: h ? (h.hi ?? h.v) : null, kcal: (a ? a.v : 0) + restRate, steps: spm, phase, zone: h ? zoneOf(h.v) : null });
+    }
+    let cum = 0; for (const m of mins) { cum += m.kcal; m.cum = cum; }
+    const elapsed = mins.length;
+    const last = (n) => mins.slice(-n);
+    const rate = (arr) => arr.length ? arr.reduce((s, m) => s + m.kcal, 0) / arr.length : 0;
+    const paceNow = rate(last(10)), paceAvg = rate(mins);
+    const hrs = mins.filter((m) => m.hr != null);
+    const curHr = hrs.length ? hrs[hrs.length - 1].hr : null;
+    const avgHr = hrs.length ? hrs.reduce((s, m) => s + m.hr, 0) / hrs.length : null;
+    const peakHr = hrs.length ? Math.max(...hrs.map((m) => m.hrHi)) : null;
+    const zoneMin = [0, 0, 0, 0, 0, 0]; for (const m of hrs) zoneMin[m.zone]++;
+    const load = zoneMin.reduce((s, v, i) => s + v * i, 0); // Edwards weights 0..5 on the app's 6 bands
+    const phases = {};
+    for (const m of mins) { const p = phases[m.phase] ||= { min: 0, kcal: 0, hrSum: 0, hrN: 0 }; p.min++; p.kcal += m.kcal; if (m.hr != null) { p.hrSum += m.hr; p.hrN++; } }
+    const remaining = Math.max(0, S.goal - cum);
+    const dataEnd = lastT + MIN;
+    const endMs = (() => { let e = atToday(S.end); if (e <= start) e += 1440 * MIN; return e; })();
+    const minsLeft = (endMs - dataEnd) / MIN;
+    return { mins, cum, elapsed, paceNow, paceAvg, curHr, avgHr, peakHr, zoneMin, load, phases, remaining, dataEnd, endMs, minsLeft,
+      need: minsLeft > 0 ? remaining / minsLeft : null, rest, maxHr, zones: settings.zones, start,
+      restingHr: (data.assistant.today || {}).restingHeartRateBpm };
+  }
+
+  // ---- render ----------------------------------------------------------------
+  function render() {
+    if (!data) return;
+    const M = model();
+    const through = Date.parse(data.assistant.freshness?.dataThrough || 0);
+    const lag = Math.round((Date.now() - through) / MIN);
+    $('fresh').textContent = 'data to ' + (through ? clock(through) : '—') + (through ? ' (' + lag + ' min ago)' : '');
+    $('fresh').className = 'fresh' + (lag > 25 ? ' stale' : '');
+    if (data.status.authError) { $('err').hidden = false; $('err').textContent = 'Google connection lost — reconnect on the vitals home page. Data stops at ' + clock(through) + '.'; }
+
+    // ring
+    const pct = Math.min(1, M.cum / S.goal), R = 62, C = 2 * Math.PI * R;
+    $('ring').innerHTML =
+      `<circle cx="75" cy="75" r="${R}" fill="none" stroke="${css('--surface-3')}" stroke-width="12"/>` +
+      `<circle cx="75" cy="75" r="${R}" fill="none" stroke="${pct >= 1 ? css('--good') : css('--series-1')}" stroke-width="12" stroke-linecap="round"
+        stroke-dasharray="${C * pct} ${C}" transform="rotate(-90 75 75)"/>` +
+      `<text x="75" y="72" text-anchor="middle" font-size="28" fill="${css('--text')}">${Math.round(pct * 100)}%</text>` +
+      `<text x="75" y="94" text-anchor="middle" font-size="11" fill="${css('--text-2')}">of ${r0(S.goal)} kcal</text>`;
+    $('burned').textContent = r0(M.cum) + ' kcal';
+    $('burned-sub').textContent = (S.basis === 'gross' ? 'burned' : 'active kcal burned') + ' since ' + S.start + ' · ' + dur(M.elapsed);
+    const etaAt = (p) => p > 0.3 ? M.dataEnd + (M.remaining / p) * MIN : null;
+    const etaNow = etaAt(M.paceNow);
+    $('eta').textContent = M.remaining <= 0 ? 'Goal reached 🎉' :
+      r0(M.remaining) + ' kcal to go' + (etaNow ? ' · at this pace you reach it at ' + clock(etaNow) : '');
+
+    // tiles
+    const zNow = M.curHr != null ? M.zones[M.mins.filter((m) => m.hr != null).slice(-1)[0].zone] : null;
+    const tile = (k, v, u, n) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}${u ? ' <small>' + u + '</small>' : ''}</div><div class="n">${n || ''}</div></div>`;
+    $('tiles').innerHTML = [
+      tile('Heart rate now', M.curHr != null ? Math.round(M.curHr) : '—', 'bpm', zNow ? zNow.label + ' · ' + zNow.note + ' · ' + Math.round(M.curHr / M.maxHr * 100) + '% max' : ''),
+      tile('Avg / peak HR', M.avgHr != null ? Math.round(M.avgHr) + ' / ' + Math.round(M.peakHr) : '—', 'bpm', 'max HR ' + M.maxHr + (M.restingHr ? ' · resting ' + M.restingHr : '')),
+      tile('Pace now', M.paceNow.toFixed(1), 'kcal/min', 'last 10 min · ' + r0(M.paceNow * 60) + ' kcal/h'),
+      tile('Session avg', M.paceAvg.toFixed(1), 'kcal/min', r0(M.paceAvg * 60) + ' kcal/h'),
+      tile('Still to burn', r0(M.remaining), 'kcal', M.need != null ? 'needs ' + M.need.toFixed(1) + ' kcal/min to finish by ' + S.end : 'finish time has passed'),
+      tile('ETA at pace now', etaNow ? clock(etaNow) : '—', '', etaNow ? 'in ' + dur((etaNow - M.dataEnd) / MIN) : 'pace too low to project'),
+      tile('ETA at session avg', etaAt(M.paceAvg) ? clock(etaAt(M.paceAvg)) : '—', '', etaAt(M.paceAvg) ? 'in ' + dur((etaAt(M.paceAvg) - M.dataEnd) / MIN) : ''),
+      tile('Cardio load', r0(M.load), '', 'zone-weighted minutes (TRIMP)'),
+    ].join('');
+
+    // insights — plain sentences from the numbers above
+    const ins = [];
+    const run = M.phases.run, str = M.phases.strength;
+    if (M.elapsed < 3) ins.push('No data for this session yet. The watch reaches Google every few minutes, then the app syncs every 5 min.');
+    if (str && str.min >= 5) ins.push(`Strength / other: ${dur(str.min)}, ${r0(str.kcal)} kcal, ${(str.kcal / str.min).toFixed(1)} kcal/min, average HR ${str.hrN ? Math.round(str.hrSum / str.hrN) : '—'}. A wrist counts gym burn low, because your heart rate drops between sets.`);
+    if (run && run.min >= 3) ins.push(`Running: ${dur(run.min)} at ${(run.kcal / run.min).toFixed(1)} kcal/min. At that rate the ${r0(M.remaining)} kcal still to go take about ${dur(M.remaining / (run.kcal / run.min))} of running.`);
+    else if (M.remaining > 0) ins.push(`At your session average (${M.paceAvg.toFixed(1)} kcal/min) the ${r0(M.remaining)} kcal still to go take ${M.paceAvg > 0.3 ? dur(M.remaining / M.paceAvg) : '—'}. Running burns faster: when you start, this line shows your real running rate.`);
+    if (M.need != null && M.remaining > 0) {
+      const ok = M.paceNow >= M.need;
+      ins.push(`To finish by ${S.end} you need ${M.need.toFixed(1)} kcal/min on average. Your pace now is ${M.paceNow.toFixed(1)} — ${ok ? 'you are on track' : 'you need ' + (M.need - M.paceNow).toFixed(1) + ' kcal/min more, or a later finish time'}.`);
+    }
+    const hard = M.zoneMin[3] + M.zoneMin[4] + M.zoneMin[5];
+    if (M.elapsed >= 5) ins.push(`${dur(hard)} at 70% of max HR or more (zones 4–6), ${Math.round(hard / Math.max(1, M.elapsed) * 100)}% of the session.`);
+    if (M.peakHr && M.peakHr >= 0.9 * M.maxHr) ins.push(`Peak ${Math.round(M.peakHr)} bpm is ${Math.round(M.peakHr / M.maxHr * 100)}% of your estimated max. Drink water in the beach heat, and slow down if you feel dizzy.`);
+    $('insights').innerHTML = ins.map((s) => '<li>' + s + '</li>').join('');
+
+    drawCum(M); drawHr(M); drawPace(M); drawZones(M); drawPhases(M);
+    $('method').textContent = (S.basis === 'gross'
+      ? `All burn = Fitbit active kcal per minute + resting burn ${M.rest.toFixed(2)} kcal/min (today's total minus active, over the minutes so far). This matches how Fitbit counts workout calories.`
+      : 'Active only = Fitbit active kcal per minute; resting burn is left out.') +
+      ` Zones are % of max HR (${M.maxHr}, ${data.settings.maxHeartRateSource === 'manual' ? 'your setting' : 'estimated as 220 − age'}), read per minute. Page refreshes every minute and asks for a sync every 3 min; the watch itself uploads with a few minutes of delay.`;
+  }
+
+  // ---- charts (plain SVG) ------------------------------------------------------
+  const W = 700, PL = 40, PR = 10;
+  function axisX(t0, t1, H, PB) {
+    const span = t1 - t0, step = span > 4 * 3600e3 ? 60 * MIN : span > 90 * MIN ? 30 * MIN : 15 * MIN;
+    let s = '';
+    for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+      const x = PL + (t - t0) / span * (W - PL - PR);
+      s += `<line x1="${x}" x2="${x}" y1="8" y2="${H - PB}" stroke="${css('--grid')}"/><text x="${x}" y="${H - PB + 14}" text-anchor="middle">${clock(t)}</text>`;
+    }
+    return s;
+  }
+  function gridY(lo, hi, H, PB, ticks, fmt) {
+    let s = '';
+    for (const v of ticks) {
+      const y = 8 + (1 - (v - lo) / (hi - lo)) * (H - PB - 8);
+      s += `<line x1="${PL}" x2="${W - PR}" y1="${y}" y2="${y}" stroke="${css('--grid')}"/><text x="${PL - 5}" y="${y + 3}" text-anchor="end">${fmt(v)}</text>`;
+    }
+    return s;
+  }
+  const niceTicks = (hi, n = 4) => { const raw = hi / n, p = 10 ** Math.floor(Math.log10(raw)), st = [1, 2, 2.5, 5, 10].map((k) => k * p).find((k) => k >= raw); return Array.from({ length: Math.floor(hi / st) + 1 }, (_, i) => i * st); };
+
+  function drawCum(M) {
+    const H = 220, PB = 22, t0 = M.start;
+    const eta = M.paceNow > 0.3 ? M.dataEnd + M.remaining / M.paceNow * MIN : M.endMs;
+    const t1 = Math.max(M.dataEnd + 30 * MIN, Math.min(Math.max(M.endMs, eta), M.start + 8 * 3600e3));
+    const hi = Math.max(S.goal * 1.08, M.cum * 1.05);
+    const x = (t) => PL + (t - t0) / (t1 - t0) * (W - PL - PR), y = (v) => 8 + (1 - v / hi) * (H - PB - 8);
+    let s = gridY(0, hi, H, PB, niceTicks(hi), (v) => r0(v)) + axisX(t0, t1, H, PB);
+    s += `<line x1="${PL}" x2="${W - PR}" y1="${y(S.goal)}" y2="${y(S.goal)}" stroke="${css('--warn')}" stroke-dasharray="5 4"/>`;
+    s += `<text x="${W - PR}" y="${y(S.goal) - 4}" text-anchor="end" style="fill:${css('--warn')}">goal ${r0(S.goal)}</text>`;
+    if (M.mins.length) {
+      const pts = M.mins.map((m) => x(m.t + MIN).toFixed(1) + ',' + y(m.cum).toFixed(1));
+      s += `<polygon points="${x(t0)},${y(0)} ${pts.join(' ')} ${x(M.dataEnd)},${y(0)}" fill="${css('--series-1')}" opacity=".18"/>`;
+      s += `<polyline points="${x(t0)},${y(0)} ${pts.join(' ')}" fill="none" stroke="${css('--series-1')}" stroke-width="2.5"/>`;
+      if (M.remaining > 0 && M.paceNow > 0.3) {
+        const te = Math.min(t1, eta), ve = M.cum + (te - M.dataEnd) / MIN * M.paceNow;
+        s += `<line x1="${x(M.dataEnd)}" y1="${y(M.cum)}" x2="${x(te)}" y2="${y(ve)}" stroke="${css('--text-2')}" stroke-width="1.5" stroke-dasharray="4 4"/>`;
+      }
+      s += `<circle cx="${x(M.dataEnd)}" cy="${y(M.cum)}" r="4" fill="${css('--series-1')}"/>`;
+    }
+    $('c-cum').innerHTML = s;
+  }
+
+  function drawHr(M) {
+    const H = 220, PB = 22, t0 = M.start, t1 = Math.max(M.dataEnd, t0 + 30 * MIN);
+    const hrs = M.mins.filter((m) => m.hr != null);
+    const lo = 50, hi = Math.max(M.maxHr, ...hrs.map((m) => m.hrHi)) + 5;
+    const x = (t) => PL + (t - t0) / (t1 - t0) * (W - PL - PR), y = (v) => 8 + (1 - (v - lo) / (hi - lo)) * (H - PB - 8);
+    let s = '';
+    // zone bands behind the trace
+    M.zones.forEach((z, i) => {
+      const a = Math.max(lo, z.fromBpm), b = Math.min(hi, z.toBpm ?? hi);
+      if (b > a) s += `<rect x="${PL}" width="${W - PL - PR}" y="${y(b)}" height="${y(a) - y(b)}" fill="${ORD[i]}" opacity=".13"/>`;
+    });
+    s += gridY(lo, hi, H, PB, [60, 80, 100, 120, 140, 160, 180].filter((v) => v < hi), (v) => v) + axisX(t0, t1, H, PB);
+    for (let i = 1; i < hrs.length; i++) {
+      const a = hrs[i - 1], b = hrs[i];
+      if (b.t - a.t > 3 * MIN) continue;
+      s += `<line x1="${x(a.t)}" y1="${y(a.hr)}" x2="${x(b.t)}" y2="${y(b.hr)}" stroke="${ORD[b.zone]}" stroke-width="2.2" stroke-linecap="round"/>`;
+    }
+    $('c-hr').innerHTML = s;
+    $('hr-legend').innerHTML = M.zones.map((z, i) => `<span><i style="background:${ORD[i]}"></i>${z.label.replace('Zone ', 'Z')} ${z.fromBpm}${z.toBpm ? '–' + z.toBpm : '+'}</span>`).join('');
+  }
+
+  function drawPace(M) {
+    const H = 180, PB = 22, t0 = M.start, t1 = Math.max(M.dataEnd, t0 + 30 * MIN);
+    const blocks = [];
+    for (let i = 0; i < M.mins.length; i += 5) {
+      const b = M.mins.slice(i, i + 5), cnt = {};
+      for (const m of b) cnt[m.phase] = (cnt[m.phase] || 0) + 1;
+      blocks.push({ t: b[0].t, n: b.length, v: b.reduce((s, m) => s + m.kcal, 0) / b.length, phase: Object.entries(cnt).sort((p, q) => q[1] - p[1])[0][0] });
+    }
+    const hi = Math.max(4, ...blocks.map((b) => b.v)) * 1.1;
+    const x = (t) => PL + (t - t0) / (t1 - t0) * (W - PL - PR), y = (v) => 8 + (1 - v / hi) * (H - PB - 8);
+    let s = gridY(0, hi, H, PB, niceTicks(hi), (v) => v) + axisX(t0, t1, H, PB);
+    for (const b of blocks) {
+      const x0 = x(b.t), w = Math.max(1, x(b.t + b.n * MIN) - x0 - 1.5);
+      s += `<rect x="${x0}" y="${y(b.v)}" width="${w}" height="${y(0) - y(b.v)}" rx="2" fill="${PHASE[b.phase]}"><title>${clock(b.t)} · ${b.v.toFixed(1)} kcal/min · ${PHASE_NAME[b.phase]}</title></rect>`;
+    }
+    if (M.need != null && M.remaining > 0 && M.need < hi * 1.5) {
+      s += `<line x1="${PL}" x2="${W - PR}" y1="${y(Math.min(M.need, hi))}" y2="${y(Math.min(M.need, hi))}" stroke="${css('--warn')}" stroke-dasharray="5 4"/>`;
+      s += `<text x="${W - PR}" y="${y(Math.min(M.need, hi)) - 4}" text-anchor="end" style="fill:${css('--warn')}">needed ${M.need.toFixed(1)} to finish by ${S.end}</text>`;
+    }
+    $('c-pace').innerHTML = s;
+  }
+
+  function drawZones(M) {
+    const tot = Math.max(1, M.zoneMin.reduce((a, b) => a + b, 0)), mx = Math.max(1, ...M.zoneMin);
+    $('zones').innerHTML = M.zones.map((z, i) => `<div class="zrow"><div>${z.label} · ${z.note}<span class="zb">${z.fromBpm}${z.toBpm ? '–' + z.toBpm : '+'} bpm</span></div>
+      <div class="ztrack"><div class="zfill" style="width:${M.zoneMin[i] / mx * 100}%;background:${ORD[i]}"></div></div>
+      <div class="zv">${dur(M.zoneMin[i])}<span class="zb">${Math.round(M.zoneMin[i] / tot * 100)}%</span></div></div>`).join('');
+  }
+
+  function drawPhases(M) {
+    const rows = ['strength', 'walk', 'run'].filter((k) => M.phases[k]).map((k) => {
+      const p = M.phases[k];
+      return `<tr><td><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${PHASE[k]};margin-right:6px"></i>${PHASE_NAME[k]}</td><td>${dur(p.min)}</td><td>${r0(p.kcal)}</td><td>${(p.kcal / p.min).toFixed(1)}</td><td>${p.hrN ? Math.round(p.hrSum / p.hrN) : '—'}</td></tr>`;
+    });
+    $('phases').innerHTML = '<tr><th>Phase</th><th>Time</th><th>kcal</th><th>kcal/min</th><th>avg HR</th></tr>' + (rows.join('') || '<tr><td colspan="5">no data yet</td></tr>');
+  }
+
+  // ---- refresh loop ----------------------------------------------------------
+  let lastSync = 0;
+  async function tick(force) {
+    try {
+      if (force || Date.now() - lastSync > 3 * MIN) {
+        lastSync = Date.now();
+        await get('./api/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {});
+      }
+      await load();
+    } catch (e) {
+      $('err').hidden = false; $('err').textContent = 'Could not load: ' + e.message;
+    }
+  }
+  $('btn-sync').addEventListener('click', () => tick(true));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(false); });
+  setInterval(() => tick(false), MIN);
+  tick(false);
+})();
+</script>
+</body>
+</html>
