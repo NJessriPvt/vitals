@@ -266,6 +266,11 @@
     $('burned-sub').textContent = (S.basis === 'gross' ? 'burned' : 'active kcal burned') + ' since ' + S.start + ' · ' + dur(M.elapsed);
     const etaAt = (p) => p > 0.3 ? M.dataEnd + (M.remaining / p) * MIN : null;
     const etaNow = etaAt(M.paceNow);
+    if (!M.elapsed) {
+      $('burned').textContent = 'waiting…';
+      $('burned-sub').textContent = 'No watch data since ' + S.start + ' yet. Last data: ' + (through ? clock(through) : '—') + '.';
+      $('eta').textContent = 'Open the Fitbit app on your phone and pull down to sync, then push Sync here.';
+    } else
     $('eta').textContent = M.remaining <= 0 ? 'Goal reached 🎉' :
       r0(M.remaining) + ' kcal to go' + (etaNow ? ' · at this pace you reach it at ' + clock(etaNow) : '');
 
