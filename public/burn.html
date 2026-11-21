@@ -411,11 +411,15 @@
   let lastSync = 0;
   async function tick(force) {
     try {
+      // Show what the database has now; a sync can take a while, so it runs
+      // behind the first paint and reloads when it lands.
+      await load();
       if (force || Date.now() - lastSync > 3 * MIN) {
         lastSync = Date.now();
-        await get('./api/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {});
+        $('fresh').textContent += ' · syncing…';
+        get('./api/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+          .catch(() => {}).then(() => load()).catch(() => {});
       }
-      await load();
     } catch (e) {
       $('err').hidden = false; $('err').textContent = 'Could not load: ' + e.message;
     }
